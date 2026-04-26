@@ -798,7 +798,7 @@ class SceneTextManager(QObject):
                 adaptive_fntsize = True
                 area_ratio = ballon_area / text_area
                 ballon_area_thresh = 1.7
-                downscale_constraint = 0.6
+                downscale_constraint = 0.55
                 resize_ratio = np.clip(min(area_ratio / ballon_area_thresh, region_rect [2] / max(wl_list)), downscale_constraint, 1.0)
 
             else:
@@ -814,7 +814,7 @@ class SceneTextManager(QObject):
                     _, src_width = blkitem.blk.normalizd_width_list(normalize=False)
                     resize_ratio_src = src_width / (sum(wl_list) + max((len(wl_list) - 1 - len(blkitem.blk.lines_array())), 0) * delimiter_len)
                     resize_ratio = max(resize_ratio_src * 1.5, 0.5)
-                resize_ratio = min(max(resize_ratio, 0.6), 1)
+                resize_ratio = min(max(resize_ratio, 0.55), 1)
 
         if resize_ratio != 1:
             new_font_size = blk_font.pointSizeF() * resize_ratio   
@@ -862,7 +862,7 @@ class SceneTextManager(QObject):
         # font size post adjustment
         post_resize_ratio = 1
         if adaptive_fntsize:
-            downscale_constraint = 0.5
+            downscale_constraint = 0.55
             w = xywh[2]
             post_resize_ratio = np.clip(max(region_rect[2] / w, downscale_constraint), 0, 1)
             resize_ratio *= post_resize_ratio
@@ -1135,4 +1135,3 @@ def get_text_size(fm: QFontMetricsF, text: str) -> Tuple[int, int]:
     
 def get_words_length_list(fm: QFontMetricsF, words: List[str]) -> List[int]:
     return [int(np.ceil(fm.horizontalAdvance(word))) for word in words]
-

@@ -1,5 +1,5 @@
 import os.path as osp
-import os, re, traceback, sys
+import os, re, traceback, sys, shutil
 from typing import List, Union
 from pathlib import Path
 import subprocess
@@ -9,8 +9,8 @@ import cv2
 
 from tqdm import tqdm
 from qtpy.QtWidgets import QAction, QFileDialog, QMenu, QHBoxLayout, QVBoxLayout, QApplication, QStackedWidget, QSplitter, QListWidget, QShortcut, QListWidgetItem, QMessageBox, QTextEdit, QPlainTextEdit
-from qtpy.QtCore import Qt, QPoint, QSize, QEvent, Signal
-from qtpy.QtGui import QContextMenuEvent, QTextCursor, QGuiApplication, QIcon, QCloseEvent, QKeySequence, QKeyEvent, QPainter, QClipboard, QImage
+from qtpy.QtCore import Qt, QPoint, QSize, QEvent, Signal, QUrl
+from qtpy.QtGui import QContextMenuEvent, QTextCursor, QGuiApplication, QIcon, QCloseEvent, QKeySequence, QKeyEvent, QPainter, QClipboard, QImage, QDesktopServices
 
 from utils.logger import logger as LOGGER
 from utils.text_processing import is_cjk, full_len, half_len
@@ -20,6 +20,8 @@ from utils.message import create_error_dialog, create_info_dialog
 from modules import GET_VALID_TEXTDETECTORS, GET_VALID_INPAINTERS, GET_VALID_TRANSLATORS, GET_VALID_OCR
 from .misc import parse_stylesheet, set_html_family, QKEY
 from utils.config import ProgramConfig, pcfg, save_config, text_styles, save_text_styles, load_textstyle_from, FontFormat
+from utils.font_loader import FONT_EXTENSIONS, add_application_font
+from utils.style_matcher import apply_smart_style, extract_source_style
 from utils.proj_imgtrans import ProjImgTrans
 from .canvas import Canvas
 from .configpanel import ConfigPanel
@@ -388,6 +390,8 @@ class MainWindow(mainwindow_cls):
         self.configPanel.save_config.connect(self.save_config)
         self.configPanel.reload_textstyle.connect(self.load_textstyle_from_proj_dir)
         self.configPanel.show_only_custom_font.connect(self.on_show_only_custom_font)
+        self.textPanel.formatpanel.import_font_clicked.connect(self.import_fonts)
+        self.textPanel.formatpanel.open_font_folder_clicked.connect(self.open_fonts_folder)
         if pcfg.let_show_only_custom_fonts_flag:
             self.on_show_only_custom_font(True)
 
@@ -474,6 +478,96 @@ class MainWindow(mainwindow_cls):
         else:
             font_list = shared.FONT_FAMILIES
         self.textPanel.formatpanel.familybox.update_font_list(font_list)
+
+    def _source_img_for_page(self, page_index: int):
+        try:
+            page_name = self.imgtrans_proj.idx2pagename(page_index)
+            if self.imgtrans_proj.current_img == page_name and self.imgtrans_proj.img_array is not None:
+                return self.imgtrans_proj.img_array
+            return self.imgtrans_proj.read_img(page_name)
+        except Exception as e:
+            LOGGER.warning(f'Failed to load source image for style matching on page {page_index}: {e}')
+            return None
+
+    def _deduplicated_font_path(self, font_path: Path) -> Path:
+        if not font_path.exists():
+            return font_path
+
+        counter = 1
+        while True:
+            candidate = font_path.with_name(f'{font_path.stem}_{counter}{font_path.suffix}')
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
+    def open_fonts_folder(self):
+        font_dir = Path(shared.PROGRAM_PATH) / 'fonts'
+        font_dir.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(font_dir))):
+            create_error_dialog(RuntimeError(str(font_dir)), self.tr('Failed to open fonts folder'))
+
+    def import_fonts(self):
+        font_filter = self.tr("Font Files (*.ttf *.otf *.ttc *.pfb)")
+        selected_files = QFileDialog.getOpenFileNames(
+            self,
+            self.tr("Import Font"),
+            osp.expanduser("~"),
+            font_filter
+        )
+        if not isinstance(selected_files, list):
+            selected_files = selected_files[0]
+        if len(selected_files) == 0:
+            return
+
+        font_dir = Path(shared.PROGRAM_PATH) / 'fonts'
+        font_dir.mkdir(parents=True, exist_ok=True)
+
+        imported_families = []
+        skipped_files = []
+        from qtpy.QtGui import QFontDatabase
+
+        for src in selected_files:
+            src_path = Path(src)
+            if src_path.suffix.lower() not in FONT_EXTENSIONS:
+                skipped_files.append(f'{src_path.name}: unsupported file type')
+                continue
+
+            try:
+                target_path = font_dir / src_path.name
+                if src_path.resolve() != target_path.resolve():
+                    target_path = self._deduplicated_font_path(target_path)
+                    shutil.copyfile(src_path, target_path)
+                else:
+                    target_path = src_path
+
+                font_id = add_application_font(str(target_path))
+                if font_id < 0:
+                    skipped_files.append(f'{src_path.name}: failed to load')
+                    continue
+
+                families = QFontDatabase.applicationFontFamilies(font_id)
+                if len(families) == 0:
+                    skipped_files.append(f'{src_path.name}: no font family found')
+                    continue
+
+                for family in families:
+                    if family not in shared.CUSTOM_FONTS:
+                        shared.CUSTOM_FONTS.append(family)
+                    shared.FONT_FAMILIES.add(family)
+                    imported_families.append(family)
+            except Exception as e:
+                skipped_files.append(f'{src_path.name}: {e}')
+
+        if len(imported_families) > 0:
+            unique_families = list(dict.fromkeys(imported_families))
+            self.on_show_only_custom_font(pcfg.let_show_only_custom_fonts_flag)
+            self.textPanel.formatpanel.familybox.setCurrentText(unique_families[0])
+            msg = self.tr("Imported fonts: ") + ', '.join(unique_families)
+            if len(skipped_files) > 0:
+                msg += '\n' + self.tr("Skipped: ") + '; '.join(skipped_files)
+            create_info_dialog(msg)
+        elif len(skipped_files) > 0:
+            create_error_dialog(ValueError('; '.join(skipped_files)), self.tr('Failed to import font'))
 
     def openDir(self, directory: str):
         try:
@@ -1316,6 +1410,7 @@ class MainWindow(mainwindow_cls):
             ffmt_list: List[FontFormat] = self.backup_blkstyles[page_index]
 
         self.postprocess_translations(blk_list)
+        source_img = self._source_img_for_page(page_index)
                 
         # override font format if necessary
         override_fnt_size = pcfg.let_fntsize_flag == 1
@@ -1336,6 +1431,17 @@ class MainWindow(mainwindow_cls):
                 if self._run_imgtrans_wo_textstyle_update and ffmt_list is not None:
                     blk.fontformat.merge(ffmt_list[ii])
                 else:
+                    smart_updates = set()
+                    if source_img is not None:
+                        try:
+                            if not isinstance(getattr(blk, 'source_style', None), dict) or len(blk.source_style) == 0:
+                                blk.source_style = extract_source_style(source_img, blk)
+                            smart_updates = apply_smart_style(blk, gf, pcfg)
+                            if 'font_family' in smart_updates and blk.rich_text:
+                                blk.rich_text = set_html_family(blk.rich_text, blk.font_family)
+                        except Exception as e:
+                            LOGGER.warning(f'Failed to apply source style matching: {e}')
+
                     if override_fnt_size or \
                         blk.font_size < 0:  # fall back to global font size if font size is not valid, it will be set to -1 for detected blocks
                         blk.font_size = gf.font_size
@@ -1343,7 +1449,7 @@ class MainWindow(mainwindow_cls):
                         blk.font_size = blk._detected_font_size
                     if override_fnt_stroke:
                         blk.stroke_width = gf.stroke_width
-                    elif pcfg.module.enable_ocr:
+                    elif pcfg.module.enable_ocr and 'stroke_width' not in smart_updates:
                         blk.recalulate_stroke_width()
                     if override_fnt_color:
                         blk.set_font_colors(fg_colors=gf.frgb)
@@ -1351,7 +1457,7 @@ class MainWindow(mainwindow_cls):
                         blk.set_font_colors(bg_colors=gf.srgb)
                     if override_alignment:
                         blk.alignment = gf.alignment
-                    elif pcfg.module.enable_detect and not blk.src_is_vertical:
+                    elif pcfg.module.enable_detect and not blk.src_is_vertical and 'alignment' not in smart_updates:
                         blk.recalulate_alignment()
                     if override_effect:
                         blk.opacity = gf.opacity
@@ -1361,7 +1467,12 @@ class MainWindow(mainwindow_cls):
                         blk.shadow_offset = gf.shadow_offset
                     if override_writing_mode:
                         blk.vertical = gf.vertical
-                    if override_font_family or blk.font_family is None:
+                    should_apply_global_font_family = (
+                        override_font_family
+                        or not blk.font_family
+                        or blk.font_family in {shared.APP_DEFAULT_FONT, shared.DEFAULT_FONT_FAMILY}
+                    )
+                    if should_apply_global_font_family:
                         blk.font_family = gf.font_family
                         if blk.rich_text:
                             blk.rich_text = set_html_family(blk.rich_text, gf.font_family)
@@ -1535,7 +1646,12 @@ class MainWindow(mainwindow_cls):
 
     def import_tstyles(self):
         ddir = osp.dirname(pcfg.text_styles_path)
-        p = QFileDialog.getOpenFileName(self, self.tr("Import Text Styles"), ddir, None, "(.json)")
+        p = QFileDialog.getOpenFileName(
+            self,
+            self.tr("Import Text Styles"),
+            ddir,
+            self.tr("JSON Files (*.json)")
+        )
         if not isinstance(p, str):
             p = p[0]
         if p == '':
@@ -1549,7 +1665,12 @@ class MainWindow(mainwindow_cls):
 
     def export_tstyles(self):
         ddir = osp.dirname(pcfg.text_styles_path)
-        savep = QFileDialog.getSaveFileName(self, self.tr("Save Text Styles"), ddir, None, "(.json)")
+        savep = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Save Text Styles"),
+            ddir,
+            self.tr("JSON Files (*.json)")
+        )
         if not isinstance(savep, str):
             savep = savep[0]
         if savep == '':
@@ -1700,6 +1821,12 @@ class MainWindow(mainwindow_cls):
                     pass
         except Exception:
             pass
+
+        try:
+            for blk in textblocks:
+                blk.source_style = extract_source_style(img, blk)
+        except Exception as e:
+            LOGGER.warning(f'Failed to extract source text styles after OCR: {e}')
 
     def translate_preprocess(self, translations: List[str] = None, textblocks: List[TextBlock] = None, translator = None, source_text:list = []):
         for i in range(len(source_text)):

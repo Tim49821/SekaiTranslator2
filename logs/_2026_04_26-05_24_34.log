@@ -1,0 +1,6 @@
+[INFO] launch:main:258 - set display language to ko_KR
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to Gemma 4 E4B-it
+[INFO] mainwindow:on_finish_setdetector:271 - Text detector set to ctd
+[INFO] mainwindow:on_finish_setocr:280 - OCR set to PaddleOCRVLManga
+[INFO] mainwindow:on_finish_setinpainter:289 - Inpainter set to lama_large_512px
+[WARNING] trans_gemma4:_load_processor:149 - Gemma processor could not be loaded (ValueError: Unrecognized processing class in data/models/gemma-4-E4B-it. Can't instantiate a processor, a tokenizer, an image processor or a feature extractor for this model. Make sure the repository contains the files of at least one of those processing classes.); falling back to AutoTokenizer.

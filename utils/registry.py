@@ -40,7 +40,7 @@ class Registry:
         self._module_dict = dict()
         self._children = dict()
         
-        # self._scope = self.infer_scope() if scope is None else scope
+        self._scope = self.infer_scope() if scope is None else scope
 
         # self.build_func will be set with the following priority:
         # 1. build_func
@@ -91,7 +91,10 @@ class Registry:
         """
         # inspect.stack() trace where this function is called, the index-2
         # indicates the frame where `infer_scope()` is called
-        filename = inspect.getmodule(inspect.stack()[2][0]).__name__
+        module = inspect.getmodule(inspect.stack()[2][0])
+        if module is None or not module.__name__:
+            return '__main__'
+        filename = module.__name__
         split_filename = filename.split('.')
         return split_filename[0]
 
@@ -121,9 +124,9 @@ class Registry:
     def name(self):
         return self._name
 
-    # @property
-    # def scope(self):
-    #     return self._scope
+    @property
+    def scope(self):
+        return self._scope
 
     @property
     def module_dict(self):
@@ -142,6 +145,9 @@ class Registry:
         Returns:
             class: The corresponding class.
         """
+        if key in self._module_dict:
+            return self._module_dict[key]
+
         scope, real_key = self.split_scope_key(key)
         if scope is None or scope == self._scope:
             # get from self
@@ -153,6 +159,8 @@ class Registry:
                 return self._children[scope].get(real_key)
             else:
                 # goto root
+                if self.parent is None:
+                    return None
                 parent = self.parent
                 while parent.parent is not None:
                     parent = parent.parent

@@ -232,21 +232,42 @@ pcfg = ProgramConfig()
 text_styles: List[FontFormat] = []
 active_format: FontFormat = None
 
+TEXTSTYLE_FILE_EXTENSION = '.json'
+FONT_FILE_EXTENSIONS = {'.otf', '.ttf', '.ttc', '.otc', '.woff', '.woff2'}
+
 def load_textstyle_from(p: str, raise_exception = False):
 
     if not osp.exists(p):
         LOGGER.warning(f'Text style {p} does not exist.')
         return
 
+    ext = osp.splitext(p)[1].lower()
+    if ext != '' and ext != TEXTSTYLE_FILE_EXTENSION:
+        err_msg = f'Text style import only supports {TEXTSTYLE_FILE_EXTENSION} files.'
+        if ext in FONT_FILE_EXTENSIONS:
+            err_msg += ' Font files cannot be imported as text styles.'
+        LOGGER.error(f'Failed to load text style from {p}: {err_msg}')
+        if raise_exception:
+            raise ValueError(err_msg)
+        return
+
     try:
         with open(p, 'r', encoding='utf8') as f:
-            style_list = json.loads(f.read())
+            style_list = json.load(f)
+            if not isinstance(style_list, list):
+                raise ValueError('Text style file must contain a JSON array.')
             styles_loaded = []
             for style in style_list:
                 try:
                     styles_loaded.append(FontFormat(**style))
                 except Exception as e:
                     LOGGER.warning(f'Skip invalid text style: {style}')
+    except UnicodeDecodeError as e:
+        err = ValueError(f'Text style file must be a UTF-8 JSON file ({TEXTSTYLE_FILE_EXTENSION}).')
+        LOGGER.error(f'Failed to load text style from {p}: {err}')
+        if raise_exception:
+            raise err from e
+        return
     except Exception as e:
         LOGGER.error(f'Failed to load text style from {p}: {e}')
         if raise_exception:

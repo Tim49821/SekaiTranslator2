@@ -24,6 +24,7 @@ from .base import OCRBase, register_OCR, DEFAULT_DEVICE, DEVICE_SELECTOR, TextBl
 PADDLE_OCR_PATH = os.path.join("data", "models", "paddle-ocr")
 # Set an environment variable to store PaddleOCR models
 os.environ["PPOCR_HOME"] = PADDLE_OCR_PATH
+os.environ["PADDLEOCR_HOME"] = PADDLE_OCR_PATH
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 if PADDLE_OCR_AVAILABLE:
@@ -109,6 +110,8 @@ if PADDLE_OCR_AVAILABLE:
             "Goan Konkani": "gom",
         }
 
+        _paddleocr_api_style = "new"
+
         params = {
             "language": {
                 "type": "selector",
@@ -187,6 +190,117 @@ if PADDLE_OCR_AVAILABLE:
                 logging.getLogger("paddleocr").setLevel(logging.WARNING)
                 logging.getLogger("predict_system").setLevel(logging.WARNING)
 
+        def _build_new_init_kwargs(self, lang_code: str, use_gpu: bool):
+            model_root = os.path.join(PADDLE_OCR_PATH, lang_code, self.ocr_version)
+            kwargs = {
+                "lang": lang_code,
+                "ocr_version": self.ocr_version,
+                "device": "gpu:0" if use_gpu else "cpu",
+                "use_doc_orientation_classify": False,
+                "use_doc_unwarping": False,
+                "use_textline_orientation": self.use_angle_cls,
+                "text_det_limit_side_len": self.det_limit_side_len,
+                "text_recognition_batch_size": self.rec_batch_num,
+                "text_rec_score_thresh": self.drop_score,
+                "enable_mkldnn": self.enable_mkldnn,
+                "text_detection_model_dir": os.path.join(model_root, "det"),
+                "text_recognition_model_dir": os.path.join(model_root, "rec"),
+            }
+            if self.use_angle_cls:
+                kwargs["textline_orientation_model_dir"] = os.path.join(
+                    model_root, "cls"
+                )
+                kwargs["textline_orientation_batch_size"] = 1
+            return kwargs
+
+        def _build_legacy_init_kwargs(self, lang_code: str, use_gpu: bool):
+            model_root = os.path.join(PADDLE_OCR_PATH, lang_code, self.ocr_version)
+            kwargs = {
+                "lang": lang_code,
+                "ocr_version": self.ocr_version,
+                "use_gpu": use_gpu,
+                "use_angle_cls": self.use_angle_cls,
+                "enable_mkldnn": self.enable_mkldnn,
+                "det_limit_side_len": self.det_limit_side_len,
+                "rec_batch_num": self.rec_batch_num,
+                "drop_score": self.drop_score,
+                "det_model_dir": os.path.join(model_root, "det"),
+                "rec_model_dir": os.path.join(model_root, "rec"),
+            }
+            if self.use_angle_cls:
+                kwargs["cls_model_dir"] = os.path.join(model_root, "cls")
+            return kwargs
+
+        def _run_ocr_model(self, img: np.ndarray):
+            if self._paddleocr_api_style == "new" and hasattr(self.model, "predict"):
+                result = self.model.predict(img)
+                if (
+                    not isinstance(result, (list, tuple))
+                    and hasattr(result, "__iter__")
+                    and not hasattr(result, "json")
+                ):
+                    result = list(result)
+                return result
+            return self.model.ocr(img, det=True, rec=True, cls=self.use_angle_cls)
+
+        def _extract_texts(self, result):
+            if result is None:
+                return []
+
+            if hasattr(result, "json"):
+                try:
+                    data = result.json
+                    if callable(data):
+                        data = data()
+                    return self._extract_texts(data)
+                except Exception:
+                    return []
+
+            if isinstance(result, dict):
+                rec_texts = result.get("rec_texts")
+                if isinstance(rec_texts, list):
+                    return [str(text) for text in rec_texts if text is not None]
+
+                if "res" in result:
+                    return self._extract_texts(result["res"])
+
+                if "ocrResults" in result:
+                    texts = []
+                    for item in result["ocrResults"]:
+                        texts.extend(self._extract_texts(item))
+                    return texts
+
+            if isinstance(result, (list, tuple)):
+                if not result:
+                    return []
+
+                if all(isinstance(item, str) for item in result):
+                    return [item for item in result if item]
+
+                if any(hasattr(item, "json") for item in result if item is not None):
+                    texts = []
+                    for item in result:
+                        texts.extend(self._extract_texts(item))
+                    return texts
+
+                legacy_texts = []
+                for line in result:
+                    if (
+                        isinstance(line, list)
+                        or isinstance(line, tuple)
+                    ) and len(line) > 1:
+                        recog = line[1]
+                        if isinstance(recog, (list, tuple)) and len(recog) > 0:
+                            legacy_texts.append(str(recog[0]))
+
+                if legacy_texts:
+                    return legacy_texts
+
+                if len(result) == 1:
+                    return self._extract_texts(result[0])
+
+            return []
+
         def _load_model(self):
             lang_code = self.lang_map[self.language]
             use_gpu = True if self.device == "cuda" else False
@@ -194,32 +308,27 @@ if PADDLE_OCR_AVAILABLE:
                 self.logger.info(
                     f"Loading PaddleOCR model for language: {self.language} ({lang_code}), GPU: {use_gpu}"
                 )
-            self.model = PaddleOCR(
-                use_angle_cls=self.use_angle_cls,
-                lang=lang_code,
-                use_gpu=use_gpu,
-                ocr_version=self.ocr_version,
-                enable_mkldnn=self.enable_mkldnn,
-                det_limit_side_len=self.det_limit_side_len,
-                rec_batch_num=self.rec_batch_num,
-                drop_score=self.drop_score,
-                det_model_dir=os.path.join(
-                    PADDLE_OCR_PATH, lang_code, self.ocr_version, "det"
-                ),
-                rec_model_dir=os.path.join(
-                    PADDLE_OCR_PATH, lang_code, self.ocr_version, "rec"
-                ),
-                cls_model_dir=(
-                    os.path.join(PADDLE_OCR_PATH, lang_code, self.ocr_version, "cls")
-                    if self.use_angle_cls
-                    else None
-                ),
-            )
+            new_kwargs = self._build_new_init_kwargs(lang_code, use_gpu)
+            legacy_kwargs = self._build_legacy_init_kwargs(lang_code, use_gpu)
+            try:
+                self.model = PaddleOCR(**new_kwargs)
+                self._paddleocr_api_style = "new"
+            except TypeError as exc:
+                # PaddleOCR 3.5.0 prefers the new pipeline-style keyword names.
+                # Keep a legacy fallback so older wheels continue to work.
+                if "unexpected keyword" not in str(exc).lower():
+                    raise
+                if self.debug_mode:
+                    self.logger.debug(
+                        "Falling back to legacy PaddleOCR init kwargs: %s", exc
+                    )
+                self.model = PaddleOCR(**legacy_kwargs)
+                self._paddleocr_api_style = "legacy"
 
         def ocr_img(self, img: np.ndarray) -> str:
             if self.debug_mode:
                 self.logger.debug(f"Starting OCR for image size: {img.shape}")
-            result = self.model.ocr(img, det=True, rec=True, cls=self.use_angle_cls)
+            result = self._run_ocr_model(img)
             if self.debug_mode:
                 self.logger.debug(f"OCR recognition result: {result}")
             text = self._process_result(result)
@@ -234,25 +343,8 @@ if PADDLE_OCR_AVAILABLE:
                 if 0 <= x1 < x2 <= im_w and 0 <= y1 < y2 <= im_h:
                     cropped_img = img[y1:y2, x1:x2]
                     try:
-                        result = self.model.ocr(
-                            cropped_img, det=True, rec=True, cls=self.use_angle_cls
-                        )
-
-                        # Extract raw text from OCR result
-                        raw_texts = []
-                        if (
-                            isinstance(result, list)
-                            and len(result) > 0
-                            and isinstance(result[0], list)
-                        ):
-                            for line in result[0]:
-                                if (
-                                    isinstance(line, list)
-                                    and len(line) > 1
-                                    and isinstance(line[1], (list, tuple))
-                                    and len(line[1]) > 0
-                                ):
-                                    raw_texts.append(line[1][0])
+                        result = self._run_ocr_model(cropped_img)
+                        raw_texts = self._extract_texts(result)
                         raw_text = " ".join(raw_texts)
 
                         if self.debug_mode:
@@ -283,26 +375,9 @@ if PADDLE_OCR_AVAILABLE:
 
         def _process_result(self, result):
             try:
-                if not result or result[0] is None:
+                raw_texts = self._extract_texts(result)
+                if not raw_texts:
                     return ""
-
-                if (
-                    isinstance(result, list)
-                    and len(result) > 0
-                    and isinstance(result[0], list)
-                ):
-                    result = result[0]
-
-                raw_texts = []
-                for line in result:
-                    if (
-                        isinstance(line, list)
-                        and len(line) > 1
-                        and isinstance(line[1], (list, tuple))
-                        and len(line[1]) > 0
-                    ):
-                        text = line[1][0]
-                        raw_texts.append(text)
 
                 # Depending on the output_format, we concatenate the lines
                 if self.output_format == "Single Line":

@@ -1,0 +1,33 @@
+[INFO] launch:main:258 - set display language to ko_KR
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to Gemma 4 E4B-it
+[INFO] mainwindow:on_finish_setocr:280 - OCR set to PaddleOCRVLManga
+[INFO] mainwindow:on_finish_setdetector:271 - Text detector set to ctd
+[INFO] mainwindow:on_finish_setinpainter:289 - Inpainter set to lama_large_512px
+[WARNING] trans_gemma4:_load_processor:150 - Gemma processor could not be loaded (ValueError: Unrecognized processing class in data/models/gemma-4-E4B-it. Can't instantiate a processor, a tokenizer, an image processor or a feature extractor for this model. Make sure the repository contains the files of at least one of those processing classes.); falling back to AutoTokenizer.
+[ERROR] trans_gemma4:_translate:345 - Failed to load Gemma 4 E4B-it translator: Failed to load Gemma 4 E4B-it. This checkpoint declares model_type 'gemma4' and requires a Transformers build that supports Gemma4ForConditionalGeneration (the local model config says transformers 5.5.0.dev0). Do not upgrade the shared application environment blindly because newer Transformers builds can break existing OCR models such as PaddleOCR-VL.
+AutoModelForImageTextToText: The checkpoint you are trying to load has model type `gemma4` but Transformers does not recognize this architecture. This could be because of an issue with the checkpoint, or because your version of Transformers is out of date.
+
+You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports this model yet. In this case, you can get the most up-to-date code by installing Transformers from source with the command `pip install git+https://github.com/huggingface/transformers.git`
+AutoModelForCausalLM: The checkpoint you are trying to load has model type `gemma4` but Transformers does not recognize this architecture. This could be because of an issue with the checkpoint, or because your version of Transformers is out of date.
+
+You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports this model yet. In this case, you can get the most up-to-date code by installing Transformers from source with the command `pip install git+https://github.com/huggingface/transformers.git`
+[DEBUG] trans_gemma4:_translate:346 - Traceback (most recent call last):
+  File "/Volumes/990 PRO/Project Folder/SekaiTranslator2/modules/translators/trans_gemma4.py", line 343, in _translate
+    self.load_model()
+  File "/Volumes/990 PRO/Project Folder/SekaiTranslator2/modules/base.py", line 233, in load_model
+    self._load_model()
+  File "/Volumes/990 PRO/Project Folder/SekaiTranslator2/modules/translators/trans_gemma4.py", line 135, in _load_model
+    self.model = self._load_generation_model().to(self.device).eval()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Volumes/990 PRO/Project Folder/SekaiTranslator2/modules/translators/trans_gemma4.py", line 171, in _load_generation_model
+    raise RuntimeError(
+RuntimeError: Failed to load Gemma 4 E4B-it. This checkpoint declares model_type 'gemma4' and requires a Transformers build that supports Gemma4ForConditionalGeneration (the local model config says transformers 5.5.0.dev0). Do not upgrade the shared application environment blindly because newer Transformers builds can break existing OCR models such as PaddleOCR-VL.
+AutoModelForImageTextToText: The checkpoint you are trying to load has model type `gemma4` but Transformers does not recognize this architecture. This could be because of an issue with the checkpoint, or because your version of Transformers is out of date.
+
+You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports this model yet. In this case, you can get the most up-to-date code by installing Transformers from source with the command `pip install git+https://github.com/huggingface/transformers.git`
+AutoModelForCausalLM: The checkpoint you are trying to load has model type `gemma4` but Transformers does not recognize this architecture. This could be because of an issue with the checkpoint, or because your version of Transformers is out of date.
+
+You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports this model yet. In this case, you can get the most up-to-date code by installing Transformers from source with the command `pip install git+https://github.com/huggingface/transformers.git`
+
+[DEBUG] proj_imgtrans:save:345 - project saved to /Volumes/990 PRO/번역/imgtrans_.json
+[INFO] config:save_config:337 - Config saved

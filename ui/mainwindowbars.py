@@ -32,6 +32,16 @@ class TitleBarToolBtn(QToolButton):
     pass
 
 
+class PersistentCheckMenu(QMenu):
+    def mouseReleaseEvent(self, event):
+        action = self.actionAt(event.pos())
+        if action is not None and action.isEnabled() and action.isCheckable() and action.menu() is None:
+            action.setChecked(not action.isChecked())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class StateChecker(QCheckBox):
     checked = Signal(str)
     unchecked = Signal(str)
@@ -370,10 +380,10 @@ class TitleBar(Widget):
 
         # 工具菜单
         self.toolsToolBtn = TitleBarToolBtn(self)
-        self.toolsToolBtn.setText(self.tr('Tools'))
+        self.toolsToolBtn.setText(self._tr_ko('Tools'))
         
-        # 区域合并工具
-        mergeToolAction = QAction('区域合并工具', self)
+        # Merge area tool
+        mergeToolAction = QAction(self._tr_ko('Merge Area Tool'), self)
         mergeToolAction.setShortcut(QKeySequence('Ctrl+Shift+M'))
         self.merge_tool_trigger = mergeToolAction.triggered
         
@@ -394,12 +404,12 @@ class TitleBar(Widget):
         for idx, sa in enumerate(stageActions):
             sa.setCheckable(True)
             sa.setChecked(pcfg.module.stage_enabled(idx))
-            sa.triggered.connect(self.stageEnableStateChanged)
+            sa.toggled.connect(self.stageEnableStateChanged)
 
         runAction = QAction(self.tr('Run'), self)
         runWoUpdateTextStyle = QAction(self.tr('Run without update textstyle'), self)
         translatePageAction = QAction(self.tr('Translate page'), self)
-        runMenu = QMenu(self.runToolBtn)
+        runMenu = PersistentCheckMenu(self.runToolBtn)
         runMenu.addActions(stageActions)
         runMenu.addSeparator()
         runMenu.addActions([runAction, runWoUpdateTextStyle, translatePageAction])
@@ -449,6 +459,18 @@ class TitleBar(Widget):
             hlayout.setContentsMargins(0, 0, 0, 0)
             hlayout.setSpacing(0)
 
+    def _tr_ko(self, text: str) -> str:
+        translated = self.tr(text)
+        if translated != text:
+            return translated
+        if pcfg.display_lang == 'ko_KR':
+            ko_map = {
+                'Tools': '도구',
+                'Merge Area Tool': '지역 합병 도구',
+            }
+            return ko_map.get(text, text)
+        return text
+
     def eventFilter(self, obj, e):
         if obj == self.mainwindow:
             if e.type() == QEvent.Type.WindowStateChange and not C.ON_MACOS:
@@ -457,7 +479,7 @@ class TitleBar(Widget):
 
         return super().eventFilter(obj, e)
 
-    def stageEnableStateChanged(self):
+    def stageEnableStateChanged(self, checked: bool):
         sender = self.sender()
         idx= self.stageActions.index(sender)
         checked = sender.isChecked()

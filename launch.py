@@ -185,6 +185,7 @@ def main():
 
     from utils.logger import setup_logging, logger as LOGGER
     from utils.io_utils import find_all_files_recursive
+    from utils.font_loader import add_application_font
     from utils import config as program_config
 
     from qtpy.QtCore import QTranslator, QLocale, Qt
@@ -260,7 +261,7 @@ def main():
     # Load custom fonts if they exist
     if osp.exists(PATH_FONTS):
         for fp in find_all_files_recursive(PATH_FONTS, FONT_EXTS):
-            fnt_idx = QFontDatabase.addApplicationFont(fp)
+            fnt_idx = add_application_font(fp)
             if fnt_idx >= 0:
                 shared.CUSTOM_FONTS.append(QFontDatabase.applicationFontFamilies(fnt_idx)[0])
 
@@ -272,7 +273,7 @@ def main():
         for fd in font_dir_list:
             fp_list = find_all_files_recursive(fd, FONT_EXTS)
             for fp in fp_list:
-                fnt_idx = QFontDatabase.addApplicationFont(fp)
+                fnt_idx = add_application_font(fp)
 
     if shared.FLAG_QT6:
         shared.FONT_FAMILIES = set(f for f in QFontDatabase.families())

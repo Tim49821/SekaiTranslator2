@@ -244,6 +244,8 @@ class FontFamilyComboBox(QFontComboBox):
 
 
 class FontFormatPanel(Widget):
+    import_font_clicked = Signal()
+    open_font_folder_clicked = Signal()
     
     textblk_item: TextBlkItem = None
     text_cursor: QTextCursor = None
@@ -262,6 +264,14 @@ class FontFormatPanel(Widget):
         self.familybox.setToolTip(self.tr("Font Family"))
         self.familybox.param_changed.connect(self.on_param_changed)
         self.familybox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self.importFontBtn = QPushButton(self.tr("Import Font"))
+        self.importFontBtn.setToolTip(self.tr("Import Font"))
+        self.importFontBtn.clicked.connect(lambda _checked=False: self.import_font_clicked.emit())
+
+        self.openFontFolderBtn = QPushButton(self.tr("Open Fonts Folder"))
+        self.openFontFolderBtn.setToolTip(self.tr("Open Fonts Folder"))
+        self.openFontFolderBtn.clicked.connect(lambda _checked=False: self.open_font_folder_clicked.emit())
 
         self.fontsizebox = FontSizeBox(self)
         self.fontsizebox.setToolTip(self.tr("Font Size"))
@@ -377,13 +387,20 @@ class FontFormatPanel(Widget):
         vl0.addWidget(self.textadvancedfmt_panel.view_widget)
         vl0.setSpacing(0)
         vl0.setContentsMargins(0, 0, 0, 0)
+        font_tools_layout = QHBoxLayout()
+        font_tools_layout.addWidget(self.importFontBtn)
+        font_tools_layout.addWidget(self.openFontFolderBtn)
+        font_tools_layout.setStretch(0, 1)
+        font_tools_layout.setStretch(1, 1)
+        font_tools_layout.setSpacing(4)
+        font_tools_layout.setContentsMargins(0, 12, 0, 0)
         hl1 = QHBoxLayout()
         hl1.addWidget(self.familybox)
         hl1.addWidget(self.fontsizebox)
         hl1.addWidget(self.lineSpacingLabel)
         hl1.addWidget(self.lineSpacingBox)
         hl1.setSpacing(4)
-        hl1.setContentsMargins(0, 12, 0, 0)
+        hl1.setContentsMargins(0, 4, 0, 0)
         hl2 = QHBoxLayout()
         hl2.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hl2.addWidget(self.colorPicker)
@@ -410,6 +427,7 @@ class FontFormatPanel(Widget):
         hl4.setSpacing(0)
 
         self.vlayout.addLayout(vl0)
+        self.vlayout.addLayout(font_tools_layout)
         self.vlayout.addLayout(hl1)
         self.vlayout.addLayout(hl2)
         self.vlayout.addLayout(hl3)

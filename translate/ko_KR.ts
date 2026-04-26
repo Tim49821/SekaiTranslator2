@@ -1260,6 +1260,16 @@ All existing translation results will be cleared!</source>
 <context>
     <name>TitleBar</name>
     <message>
+        <location filename="../ui/mainwindowbars.py" line="373"/>
+        <source>Tools</source>
+        <translation>도구</translation>
+    </message>
+    <message>
+        <location filename="../ui/mainwindowbars.py" line="376"/>
+        <source>Merge Area Tool</source>
+        <translation>지역 합병 도구</translation>
+    </message>
+    <message>
         <location filename="../ui/mainwindowbars.py" line="325"/>
         <source>Edit</source>
         <translation>편집</translation>
@@ -1393,6 +1403,215 @@ All existing translation results will be cleared!</source>
         <location filename="../ui/mainwindowbars.py" line="340"/>
         <source>Keyword substitution for machine translation source text</source>
         <translation>원문에 대한 키워드 치환(전처리)</translation>
+    </message>
+</context>
+<context>
+    <name>MergeDialog</name>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="12"/>
+        <source>Merge Area Tool Settings</source>
+        <translation>지역 합병 도구 설정</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="43"/>
+        <source>Main Settings</source>
+        <translation>주요 설정</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="51"/>
+        <source>Merge mode:</source>
+        <translation>합병 모드:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="55"/>
+        <source>Text Merge Order (by Label)</source>
+        <translation>텍스트 합병 순서 (라벨 기준)</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="61"/>
+        <source>Label1,Label2,...</source>
+        <translation>라벨1,라벨2,...</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="67"/>
+        <source>LTR labels:</source>
+        <translation>좌->우(LTR) 라벨:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="68"/>
+        <source>RTL labels:</source>
+        <translation>우->좌(RTL) 라벨:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="69"/>
+        <source>TTB labels:</source>
+        <translation>상->하(TTB) 라벨:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="74"/>
+        <source>Label Merge Rules</source>
+        <translation>라벨 합병 규칙</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="82"/>
+        <source>Label merge strategy:</source>
+        <translation>라벨 합병 전략:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="85"/>
+        <source>Enable excluded labels (blacklist)</source>
+        <translation>제외 라벨(블랙리스트) 사용</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="91"/>
+        <source>Example: label1,label2</source>
+        <translation>예: label1,label2</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="92"/>
+        <source>Blacklist labels:</source>
+        <translation>블랙리스트 라벨:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="97"/>
+        <source>Require exact label match</source>
+        <translation>라벨이 완전히 같아야 합병</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="100"/>
+        <source>Merge only within specific label groups</source>
+        <translation>특정 라벨 그룹 내에서만 합병</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="102"/>
+        <source>One group per line, labels in group separated by commas
+Example:
+balloon,balloon2
+qipao,qipao2</source>
+        <translation>한 줄에 한 그룹씩 입력하고, 그룹 내 라벨은 쉼표로 구분합니다.
+예:
+balloon,balloon2
+qipao,qipao2</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="116"/>
+        <source>Geometric Merge Parameters</source>
+        <translation>기하학적 합병 파라미터</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="140"/>
+        <source>Vertical Merge (Top/Bottom)</source>
+        <translation>세로 합병 (위/아래)</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="141"/>
+        <source>Maximum vertical gap (px):</source>
+        <translation>최대 세로 간격(픽셀):</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="142"/>
+        <source>Minimum horizontal overlap ratio:</source>
+        <translation>최소 가로 겹침 비율:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="143"/>
+        <source>Horizontal Merge (Left/Right)</source>
+        <translation>가로 합병 (좌/우)</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="144"/>
+        <source>Maximum horizontal gap (px):</source>
+        <translation>최대 가로 간격(픽셀):</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="145"/>
+        <source>Minimum vertical overlap ratio:</source>
+        <translation>최소 세로 겹침 비율:</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="150"/>
+        <source>Advanced Options</source>
+        <translation>고급 옵션</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="154"/>
+        <source>Allow negative gap (boxes may overlap)</source>
+        <translation>음수 간격 허용(박스가 서로 겹쳐도 허용)</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="161"/>
+        <source>Merge Result Type</source>
+        <translation>합병 결과 유형</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="167"/>
+        <source>Merge horizontal rectangle</source>
+        <translation>가로 직사각형으로 합병</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="168"/>
+        <source>Merge rotated rectangle</source>
+        <translation>회전 직사각형으로 합병</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="182"/>
+        <source>Run on current file</source>
+        <translation>현재 파일에 실행</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="183"/>
+        <source>Run on all files</source>
+        <translation>모든 파일에 실행</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="184"/>
+        <source>Cancel</source>
+        <translation>취소</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="28"/>
+        <source>Vertical Merge</source>
+        <translation>세로 합병</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="29"/>
+        <source>Horizontal Merge</source>
+        <translation>가로 합병</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="30"/>
+        <source>Vertical Then Horizontal</source>
+        <translation>세로 후 가로</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="31"/>
+        <source>Horizontal Then Vertical</source>
+        <translation>가로 후 세로</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="32"/>
+        <source>None</source>
+        <translation>없음</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="36"/>
+        <source>Prefer Shorter Label</source>
+        <translation>더 짧은 라벨 우선</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="37"/>
+        <source>Use First Box Label</source>
+        <translation>첫 번째 박스 라벨 사용</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="38"/>
+        <source>Combine Labels (label1+label2)</source>
+        <translation>라벨 결합 (label1+label2)</translation>
+    </message>
+    <message>
+        <location filename="../ui/merge_dialog.py" line="39"/>
+        <source>Prefer Non-Default Label</source>
+        <translation>기본값이 아닌 라벨 우선</translation>
     </message>
 </context>
 <context>

@@ -230,8 +230,10 @@ class BaseModule:
     def load_model(self):
         # TODO: check and download files & inform UIs
         aquire_model_loading_lock()
-        self._load_model()
-        release_model_loading_lock()
+        try:
+            self._load_model()
+        finally:
+            release_model_loading_lock()
         return
 
     def _load_model(self):
@@ -364,4 +366,3 @@ def init_ocr_registries():
 
 def init_translator_registries():
     init_module_registries('translator')
-

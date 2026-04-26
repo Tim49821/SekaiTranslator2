@@ -10,6 +10,8 @@ jaconv
 torch
 torchvision
 transformers==4.57.1
+huggingface_hub>=0.34.0
+protobuf
 mecab-python3; sys_platform == 'darwin'
 fugashi
 unidic_lite
@@ -37,6 +39,7 @@ ultralytics>=8.4.14
 beautifulsoup4
 colorama
 openai>=2.8.1
+paddleocr==3.5.0
 pyyaml
 natsort
 py7zr

@@ -104,6 +104,22 @@ class PaddleOCRVLManga(OCRBase):
         answer = self.processor.batch_decode(generated_tokens, skip_special_tokens=True)[0]
         return answer.split('\n')
 
+    def _load_processor(self):
+        try:
+            return AutoProcessor.from_pretrained(
+                MODEL_PATH, trust_remote_code=True, use_fast=True
+            )
+        except ImportError as exc:
+            if "protobuf" not in str(exc).lower():
+                raise
+
+            self.logger.warning(
+                "PaddleOCR-VL fast tokenizer needs protobuf; falling back to the slow tokenizer."
+            )
+            return AutoProcessor.from_pretrained(
+                MODEL_PATH, trust_remote_code=True, use_fast=False
+            )
+
     def _load_model(self):
         if self.model is None:
             model = AutoModelForCausalLM.from_pretrained(
@@ -112,9 +128,7 @@ class PaddleOCRVLManga(OCRBase):
                 dtype=torch.float16 if self.device == "cuda" else torch.float32
             ).to(self.device).eval()
 
-            processor = AutoProcessor.from_pretrained(
-                MODEL_PATH, trust_remote_code=True, use_fast=True
-            )
+            processor = self._load_processor()
 
             # Set pad_token_id to avoid warning during generation
             if model.generation_config.pad_token_id is None:
@@ -141,5 +155,4 @@ class PaddleOCRVLManga(OCRBase):
         device = self.params['device']['value']
         if self.device != device and self.model is not None:
             self.model.to(device)
-
 
