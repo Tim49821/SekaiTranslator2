@@ -1,7 +1,0 @@
-[INFO] launch:main:258 - set display language to ko_KR
-[INFO] mainwindow:on_finish_settranslator:299 - Translator set to Gemma 4 E4B-it
-[WARNING] ocr_paddleVL_manga:_load_processor:116 - PaddleOCR-VL fast tokenizer needs protobuf; falling back to the slow tokenizer.
-[INFO] mainwindow:on_finish_setocr:280 - OCR set to PaddleOCRVLManga
-[INFO] mainwindow:on_finish_setinpainter:289 - Inpainter set to lama_large_512px
-[INFO] mainwindow:on_finish_setdetector:271 - Text detector set to ctd
-[INFO] config:save_config:337 - Config saved

@@ -135,11 +135,20 @@ class FakeLlama:
 
     def create_chat_completion(self, **kwargs):
         self.completion_calls.append(kwargs)
+        prompt = kwargs["messages"][1]["content"]
+        page_json = prompt.split("Page source texts:\n", 1)[1]
+        items = json.loads(page_json)
         return {
             "choices": [
                 {
                     "message": {
-                        "content": f"translation-{len(self.completion_calls)}",
+                        "content": json.dumps(
+                            [
+                                {"id": item["id"], "translation": f"translation-{seq}"}
+                                for seq, item in enumerate(items, 1)
+                            ],
+                            ensure_ascii=False,
+                        ),
                     }
                 }
             ]
@@ -278,17 +287,42 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(payload["source_lang"], "Japanese")
         self.assertEqual(payload["target_lang"], "Korean")
         self.assertEqual(payload["model_path"], "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf")
+        self.assertEqual(payload["model_quantization"], "Q4_K_M")
         self.assertEqual(payload["gpu_layers"], 0)
         self.assertEqual(payload["context_tokens"], 512)
+
+    def test_q6_quantization_uses_upstream_q6_file(self):
+        stdout = '{"translations":["one"]}'
+        with patch("modules.translators.trans_gemma4.osp.isfile", return_value=True), \
+             patch("modules.translators.trans_gemma4.subprocess.run", return_value=FakeCompletedProcess(stdout=stdout)) as run_mock:
+            translator = Gemma4E4BTranslator(
+                "日本語",
+                "한국어",
+                **{
+                    "worker python": "/fake/python",
+                    "model quantization": "Q6_K_M",
+                },
+            )
+            result = translator.translate(["line one"])
+
+        self.assertEqual(result, ["one"])
+        payload = json.loads(run_mock.call_args.kwargs["input"])
+        self.assertEqual(payload["model_quantization"], "Q6_K_M")
+        self.assertEqual(payload["model_path"], "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q6_K.gguf")
 
     def test_missing_gguf_model_returns_short_error(self):
         with patch("modules.translators.trans_gemma4.osp.isfile", return_value=False), \
              patch("modules.translators.trans_gemma4.subprocess.run") as run_mock:
-            translator = Gemma4E4BTranslator("日本語", "한국어", **{"worker python": "/fake/python"})
+            translator = Gemma4E4BTranslator(
+                "日本語",
+                "한국어",
+                **{"worker python": "/fake/python", "model quantization": "Q6_K_M"},
+            )
             result = translator.translate(["line one", ""])
 
         self.assertEqual(result[1], "")
-        self.assertIn("Gemma4 GGUF Q4_K_M model file is missing", result[0])
+        self.assertIn("Gemma4 GGUF Q6_K_M model file is missing", result[0])
+        self.assertIn("gemma-4-E4B-it-Q6_K.gguf", result[0])
         run_mock.assert_not_called()
 
     def test_missing_worker_returns_short_error(self):
@@ -301,7 +335,7 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(result[1], "")
         self.assertIn("Gemma4 GGUF runtime is not configured", result[0])
 
-    def test_worker_translates_each_non_empty_cell_in_order_with_rolling_context(self):
+    def test_worker_translates_full_page_in_one_generation(self):
         payload = {
             "model_path": "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf",
             "texts": ["line one", "", "line two", "line three"],
@@ -321,21 +355,22 @@ class GemmaTranslatorTest(unittest.TestCase):
             result = gemma4_worker.translate(payload)
 
         self.assertEqual(result, ["translation-1", "", "translation-2", "translation-3"])
-        self.assertEqual(len(FakeLlama.completion_calls), 3)
-        first_prompt = FakeLlama.completion_calls[0]["messages"][1]["content"]
-        second_prompt = FakeLlama.completion_calls[1]["messages"][1]["content"]
-        third_prompt = FakeLlama.completion_calls[2]["messages"][1]["content"]
+        self.assertEqual(len(FakeLlama.completion_calls), 1)
+        page_prompt = FakeLlama.completion_calls[0]["messages"][1]["content"]
+        system_prompt = FakeLlama.completion_calls[0]["messages"][0]["content"]
 
-        self.assertIn("Previous source text:\n(none)", first_prompt)
-        self.assertIn("Previous translation:\n(none)", first_prompt)
-        self.assertIn("Previous source text:\nline one", second_prompt)
-        self.assertIn("Previous translation:\ntranslation-1", second_prompt)
-        self.assertIn("Current source text:\nline two", second_prompt)
-        self.assertIn("Previous source text:\nline two", third_prompt)
-        self.assertIn("Previous translation:\ntranslation-2", third_prompt)
-        self.assertNotIn("line one", third_prompt)
-        self.assertNotIn("translation-1", third_prompt)
-        self.assertGreaterEqual(collect_mock.call_count, 4)
+        self.assertIn("Treat all cells as shared page context", page_prompt)
+        self.assertIn('"id": 1', page_prompt)
+        self.assertIn('"text": "line one"', page_prompt)
+        self.assertIn('"id": 3', page_prompt)
+        self.assertIn('"text": "line two"', page_prompt)
+        self.assertIn('"id": 4', page_prompt)
+        self.assertIn('"text": "line three"', page_prompt)
+        self.assertNotIn("Previous source text", page_prompt)
+        self.assertIn("highest priority is a natural, fluent translation", system_prompt)
+        self.assertIn("consistency across the whole page", system_prompt)
+        self.assertIn("original style preservation", page_prompt)
+        self.assertGreaterEqual(collect_mock.call_count, 2)
 
     def test_worker_cleans_thinking_and_labels_from_output(self):
         cleaned = gemma4_worker._clean_translation("<think>notes</think>\nTranslation: 안녕")

@@ -1,0 +1,35 @@
+[INFO] launch:main:258 - set display language to ko_KR
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to Gemma 4 E4B-it
+[INFO] mainwindow:on_finish_setdetector:271 - Text detector set to ctd
+[INFO] mainwindow:on_finish_setinpainter:289 - Inpainter set to lama_large_512px
+[INFO] mainwindow:on_finish_setocr:280 - OCR set to PaddleOCRVLManga
+[INFO] config:save_config:337 - Config saved
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to NLLB-200 distilled 1.3B
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to Gemma 4 E4B-it
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to Papago
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to Gemma 4 E4B-it
+[INFO] config:save_config:337 - Config saved
+[INFO] mainwindow:on_finish_settranslator:299 - Translator set to LLM Google
+[INFO] config:save_config:337 - Config saved
+[DEBUG] trans_llm_api_json:_initialize_client:202 - Initializing client for Google with key AIza...b-fA at endpoint https://generativelanguage.googleapis.com/v1beta/openai
+[DEBUG] trans_llm_api_json:_request_translation:435 - Using 'json_object' mode for Google.
+[WARNING] trans_llm_api_json:_request_translation:490 - Initial Pydantic validation failed: 1 validation error for TranslationResponse
+  Input should be a valid dictionary or instance of TranslationResponse [type=model_type, input_value=[{'id': 1, 'translation':...ranslation': '7AruroD'}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/model_type. Attempting to fix simple dictionary or list format.
+[DEBUG] trans_llm_api_json:_request_translation:516 - Transformed simple response to: {'translations': [{'id': 1, 'translation': '…현장 학습 때 만든 화관인데, 미쿠한테 잘 어울릴 것 같아서 가져왔어.'}, {'id': 2, 'translation': '새로운 리본을 만들었어! 미쿠도 가끔은 기분 전환으로 이미지 변신 해보는 거 어때?'}, {'id': 3, 'translation': '저번에 미쿠가 해준 조언을 바탕으로 새로 조정한 데모도 완성했는데, 한번 들어볼래?'}, {'id': 4, 'translation': '미즈키가 시끄럽게 구는 바람에 미쿠를 그릴 수 없게 됐잖아!'}, {'id': 5, 'translation': '2026.3.9'}, {'id': 6, 'translation': '7AruroD'}]}
+[INFO] trans_llm_api_json:_request_translation:522 - Successfully parsed response after fixing simple format.
+[INFO] trans_llm_api_json:_translate:588 - Successfully translated batch of 6. Tokens used: 605
+[INFO] module_manager:_imgtrans_pipeline:404 - Processing all 1 pages
+[DEBUG] proj_imgtrans:save:345 - project saved to /Volumes/990 PRO/번역/imgtrans_.json
+[INFO] module_manager:_imgtrans_pipeline:404 - Processing all 1 pages
+[DEBUG] trans_llm_api_json:_initialize_client:202 - Initializing client for Google with key AIza...b-fA at endpoint https://generativelanguage.googleapis.com/v1beta/openai
+[DEBUG] trans_llm_api_json:_request_translation:435 - Using 'json_object' mode for Google.
+[WARNING] trans_llm_api_json:_request_translation:490 - Initial Pydantic validation failed: 1 validation error for TranslationResponse
+  Input should be a valid dictionary or instance of TranslationResponse [type=model_type, input_value=[{'id': 1, 'translation':...ranslation': '7AruroD'}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/model_type. Attempting to fix simple dictionary or list format.
+[DEBUG] trans_llm_api_json:_request_translation:516 - Transformed simple response to: {'translations': [{'id': 1, 'translation': '…현장 학습 때 만든 화관인데, 미쿠한테 잘 어울릴 것 같아서 가져왔어.'}, {'id': 2, 'translation': '새로운 리본을 만들었어! 미쿠도 가끔은 기분 전환으로 이미지 변신 해보는 거 어때?'}, {'id': 3, 'translation': '저번에 미쿠가 해준 조언을 바탕으로 새로 조정한 데모도 완성했는데, 한번 들어볼래?'}, {'id': 4, 'translation': '미즈키가 시끄럽게 구는 바람에 미쿠를 그릴 수 없게 됐잖아!'}, {'id': 5, 'translation': '2026.3.9'}, {'id': 6, 'translation': '7AruroD'}]}
+[INFO] trans_llm_api_json:_request_translation:522 - Successfully parsed response after fixing simple format.
+[INFO] trans_llm_api_json:_translate:588 - Successfully translated batch of 6. Tokens used: 605
+[DEBUG] proj_imgtrans:save:345 - project saved to /Volumes/990 PRO/번역/imgtrans_.json
+[DEBUG] proj_imgtrans:save:345 - project saved to /Volumes/990 PRO/번역/imgtrans_.json
+[INFO] config:save_config:337 - Config saved

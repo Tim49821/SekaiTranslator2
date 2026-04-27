@@ -4,7 +4,7 @@ import re
 import sys
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Tuple
 
 try:
     from llama_cpp import Llama
@@ -15,34 +15,36 @@ else:
     LLAMA_CPP_IMPORT_ERROR = None
 
 
-def _build_messages(
+def _build_page_messages(
     source_lang: str,
     target_lang: str,
-    current_source: str,
-    previous_source: Optional[str],
-    previous_translation: Optional[str],
+    indexed_texts: List[Tuple[int, str]],
     thinking_mode: bool,
 ) -> List[Dict[str, str]]:
-    previous_source = previous_source or "(none)"
-    previous_translation = previous_translation or "(none)"
     thinking_instruction = (
-        "Thinking mode is enabled, but the final answer must still contain only the current text cell translation."
+        "Thinking mode is enabled, but the final answer must still contain only the requested JSON translations."
         if thinking_mode
         else "Thinking mode is disabled. Do not output hidden reasoning, analysis, or thinking blocks."
     )
     system_prompt = (
-        "You are a professional manga and comic translator. Translate only the current text cell. "
-        "Preserve the speaker's tone, style, speech level, terminology, and consistency with the immediately previous text cell. "
+        "You are a professional manga and comic translator. Translate every text cell from one page. "
+        "Your highest priority is a natural, fluent translation that preserves the original writing style and keeps tone, speech level, characterization, terminology, and phrasing consistent across the whole page. "
+        "Preserve each speaker's tone, style, speech level, terminology, and consistency across the whole page. "
         f"{thinking_instruction} "
-        "Do not add explanations, alternatives, markdown, quotes, or labels. Output only the translated current text."
+        "Do not add explanations, alternatives, markdown, quotes, or labels. Output only valid JSON."
     )
+    source_items = [
+        {"id": idx + 1, "text": text}
+        for idx, text in indexed_texts
+    ]
     user_prompt = (
         f"Source language: {source_lang}\n"
         f"Target language: {target_lang}\n\n"
-        f"Previous source text:\n{previous_source}\n\n"
-        f"Previous translation:\n{previous_translation}\n\n"
-        f"Current source text:\n{current_source}\n\n"
-        "Translate the current source text only. Keep names, terminology, tone, style, and speech level consistent with the previous context."
+        "Translate the following page text cells in their original order. Treat all cells as shared page context.\n"
+        "Prioritize natural wording, original style preservation, and consistent tone, speech level, terminology, and phrasing across all translated cells.\n"
+        "Return a JSON array with the same ids and one translation per item, for example:\n"
+        "[{\"id\":1,\"translation\":\"...\"},{\"id\":2,\"translation\":\"...\"}]\n\n"
+        f"Page source texts:\n{json.dumps(source_items, ensure_ascii=False)}"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -105,17 +107,73 @@ def _clean_translation(text: str) -> str:
     return text.strip().strip("\"'")
 
 
+def _extract_json_array(text: str):
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start < 0 or end <= start:
+            raise
+        parsed = json.loads(text[start : end + 1])
+
+    if isinstance(parsed, dict):
+        for key in ("translations", "items", "results"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return value
+    if isinstance(parsed, list):
+        return parsed
+    raise ValueError("Gemma4 page response did not contain a JSON array")
+
+
+def _coerce_page_translations(response_text: str, expected_ids: List[int]) -> List[str]:
+    items = _extract_json_array(response_text)
+
+    if all(isinstance(item, str) for item in items):
+        if len(items) != len(expected_ids):
+            raise ValueError(f"Expected {len(expected_ids)} translations, got {len(items)}")
+        return [_clean_translation(item) for item in items]
+
+    by_id = {}
+    ordered = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Gemma4 page response must contain strings or objects")
+        item_id = item.get("id", item.get("index"))
+        translation = item.get("translation", item.get("text", item.get("content")))
+        if not isinstance(translation, str):
+            raise ValueError("Gemma4 page response item is missing a translation string")
+        if item_id is not None:
+            try:
+                by_id[int(item_id)] = _clean_translation(translation)
+                continue
+            except (TypeError, ValueError):
+                pass
+        ordered.append(_clean_translation(translation))
+
+    if by_id:
+        missing = [item_id for item_id in expected_ids if item_id not in by_id]
+        if missing:
+            raise ValueError(f"Gemma4 page response is missing ids: {missing}")
+        return [by_id[item_id] for item_id in expected_ids]
+
+    if len(ordered) != len(expected_ids):
+        raise ValueError(f"Expected {len(expected_ids)} translations, got {len(ordered)}")
+    return ordered
+
+
 def _empty_cache():
     gc.collect()
 
 
-def _translate_one(llm, payload: Dict, source_text: str, previous_source: Optional[str], previous_translation: Optional[str]) -> str:
-    messages = _build_messages(
+def _translate_page(llm, payload: Dict, indexed_texts: List[Tuple[int, str]]) -> List[str]:
+    expected_ids = [idx + 1 for idx, _ in indexed_texts]
+    messages = _build_page_messages(
         payload["source_lang"],
         payload["target_lang"],
-        source_text,
-        previous_source,
-        previous_translation,
+        indexed_texts,
         bool(payload["thinking_mode"]),
     )
     temperature = float(payload["temperature"])
@@ -129,7 +187,7 @@ def _translate_one(llm, payload: Dict, source_text: str, previous_source: Option
 
     try:
         response = llm.create_chat_completion(**kwargs)
-        return _clean_translation(_extract_content(response))
+        return _coerce_page_translations(_extract_content(response), expected_ids)
     finally:
         del messages
         if "response" in locals():
@@ -139,29 +197,23 @@ def _translate_one(llm, payload: Dict, source_text: str, previous_source: Option
 
 def translate(payload: Dict) -> List[str]:
     llm = _load_model(payload)
-    translations = []
-    previous_source = None
-    previous_translation = None
+    try:
+        indexed_texts = [
+            (idx, source_text)
+            for idx, source_text in enumerate(payload["texts"])
+            if isinstance(source_text, str) and source_text.strip()
+        ]
+        translations = [""] * len(payload["texts"])
+        if not indexed_texts:
+            return translations
 
-    for source_text in payload["texts"]:
-        if not isinstance(source_text, str) or not source_text.strip():
-            translations.append("")
-            continue
-
-        translated = _translate_one(
-            llm,
-            payload,
-            source_text,
-            previous_source,
-            previous_translation,
-        )
-        translations.append(translated)
-        previous_source = source_text
-        previous_translation = translated
-
-    del llm
-    _empty_cache()
-    return translations
+        page_translations = _translate_page(llm, payload, indexed_texts)
+        for (source_idx, _), translated in zip(indexed_texts, page_translations):
+            translations[source_idx] = translated
+        return translations
+    finally:
+        del llm
+        _empty_cache()
 
 
 def main():

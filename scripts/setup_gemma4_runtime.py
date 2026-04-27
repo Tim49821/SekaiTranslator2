@@ -8,7 +8,11 @@ from pathlib import Path
 APP_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = APP_ROOT / "data" / "models" / "gemma-4-runtime"
 MODEL_REPO_ID = "unsloth/gemma-4-E4B-it-GGUF"
-MODEL_FILENAME = "gemma-4-E4B-it-Q4_K_M.gguf"
+MODEL_FILES = {
+    "Q4_K_M": "gemma-4-E4B-it-Q4_K_M.gguf",
+    "Q6_K_M": "gemma-4-E4B-it-Q6_K.gguf",
+}
+DEFAULT_QUANTIZATION = "Q4_K_M"
 MODEL_DIR = APP_ROOT / "data" / "models" / "gemma-4-E4B-it-GGUF"
 
 
@@ -29,8 +33,28 @@ def should_download_model() -> bool:
     ).strip().lower() in {"1", "true", "yes"}
 
 
+def selected_quantization() -> str:
+    args = sys.argv[1:]
+    quantization = os.environ.get("BALLOONTRANS_GEMMA4_GGUF_QUANT", DEFAULT_QUANTIZATION)
+    for idx, arg in enumerate(args):
+        if arg.startswith("--quant="):
+            quantization = arg.split("=", 1)[1]
+        elif arg == "--quant" and idx + 1 < len(args):
+            quantization = args[idx + 1]
+
+    quantization = quantization.upper()
+    if quantization == "Q6_K":
+        quantization = "Q6_K_M"
+    if quantization not in MODEL_FILES:
+        valid = ", ".join(MODEL_FILES)
+        raise ValueError(f"Unsupported Gemma4 GGUF quantization: {quantization}. Valid options: {valid}")
+    return quantization
+
+
 def download_model(py: Path):
-    model_path = MODEL_DIR / MODEL_FILENAME
+    quantization = selected_quantization()
+    model_filename = MODEL_FILES[quantization]
+    model_path = MODEL_DIR / model_filename
     if model_path.exists():
         print(f"Gemma4 GGUF model already exists: {model_path}")
         return
@@ -38,9 +62,10 @@ def download_model(py: Path):
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     code = (
         "from huggingface_hub import hf_hub_download; "
-        f"hf_hub_download(repo_id={MODEL_REPO_ID!r}, filename={MODEL_FILENAME!r}, "
+        f"hf_hub_download(repo_id={MODEL_REPO_ID!r}, filename={model_filename!r}, "
         f"local_dir={str(MODEL_DIR)!r}, local_dir_use_symlinks=False)"
     )
+    print(f"Downloading Gemma4 GGUF {quantization}: {MODEL_REPO_ID}/{model_filename}")
     run([py, "-c", code])
 
 

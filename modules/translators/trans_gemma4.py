@@ -12,8 +12,12 @@ from ..base import DEVICE_SELECTOR
 
 MODEL_REPO_ID = "unsloth/gemma-4-E4B-it-GGUF"
 MODEL_DIR = "data/models/gemma-4-E4B-it-GGUF"
-MODEL_FILENAME = "gemma-4-E4B-it-Q4_K_M.gguf"
-MODEL_PATH = str(Path(MODEL_DIR) / MODEL_FILENAME)
+MODEL_FILES = {
+    "Q4_K_M": "gemma-4-E4B-it-Q4_K_M.gguf",
+    # The upstream repo publishes the requested Q6_K_M-level quant as Q6_K.
+    "Q6_K_M": "gemma-4-E4B-it-Q6_K.gguf",
+}
+DEFAULT_QUANTIZATION = "Q4_K_M"
 RUNTIME_PATH = "data/models/gemma-4-runtime"
 WORKER_PATH = Path(__file__).with_name("gemma4_worker.py")
 SETUP_COMMAND = "python scripts/setup_gemma4_runtime.py"
@@ -54,15 +58,21 @@ class Gemma4E4BTranslator(BaseTranslator):
     cht_require_convert = True
     hf_model_repo_id = MODEL_REPO_ID
     hf_model_save_dir = MODEL_DIR
-    hf_model_required_files = [MODEL_FILENAME]
-    hf_model_allow_patterns = [MODEL_FILENAME, "README.md", "*.json", "*.jinja"]
+    hf_model_required_files = [list(MODEL_FILES.values())]
+    hf_model_allow_patterns = [MODEL_FILES[DEFAULT_QUANTIZATION], "README.md", "*.json", "*.jinja"]
 
     params: Dict = {
         "description": (
             "Offline Gemma 4 E4B-it translator using unsloth/gemma-4-E4B-it-GGUF "
-            "Q4_K_M. Place gemma-4-E4B-it-Q4_K_M.gguf in data/models/gemma-4-E4B-it-GGUF."
+            "Q4_K_M or Q6_K_M. Place the selected GGUF file in data/models/gemma-4-E4B-it-GGUF."
         ),
         "device": DEVICE_SELECTOR(),
+        "model quantization": {
+            "type": "selector",
+            "options": list(MODEL_FILES.keys()),
+            "value": DEFAULT_QUANTIZATION,
+            "description": "GGUF quantization. Q6_K_M uses the upstream gemma-4-E4B-it-Q6_K.gguf file.",
+        },
         "worker python": {
             "value": "",
             "description": "Optional Python executable for the isolated Gemma4 GGUF runtime. Empty uses BALLOONTRANS_GEMMA4_PYTHON or data/models/gemma-4-runtime.",
@@ -77,15 +87,15 @@ class Gemma4E4BTranslator(BaseTranslator):
             "description": "Gemma4 GGUF runs in a subprocess, so model memory is released after each translation call.",
         },
         "max input tokens": {
-            "value": 2048,
-            "description": "Target prompt budget for the current cell plus previous-cell context.",
+            "value": 4096,
+            "description": "Target prompt budget for the full page text list.",
         },
         "max new tokens": {
-            "value": 512,
-            "description": "Maximum generated tokens per text cell.",
+            "value": 2048,
+            "description": "Maximum generated tokens for the full page translation response.",
         },
         "context tokens": {
-            "value": 4096,
+            "value": 8192,
             "description": "llama.cpp context size for the GGUF model.",
         },
         "gpu layers": {
@@ -103,7 +113,7 @@ class Gemma4E4BTranslator(BaseTranslator):
         "thinking mode": {
             "type": "checkbox",
             "value": False,
-            "description": "Allow Gemma thinking behavior in the prompt. Output is still constrained to the current cell translation only.",
+            "description": "Allow Gemma thinking behavior in the prompt. Output is still constrained to page translations only.",
         },
     }
 
@@ -125,6 +135,21 @@ class Gemma4E4BTranslator(BaseTranslator):
     @property
     def worker_timeout(self) -> int:
         return int(self.get_param_value("worker timeout"))
+
+    @property
+    def model_quantization(self) -> str:
+        quantization = self.get_param_value("model quantization")
+        if quantization not in MODEL_FILES:
+            return DEFAULT_QUANTIZATION
+        return quantization
+
+    @property
+    def model_filename(self) -> str:
+        return MODEL_FILES[self.model_quantization]
+
+    @property
+    def model_path(self) -> str:
+        return str(Path(MODEL_DIR) / self.model_filename)
 
     def _resolve_worker_python(self) -> Optional[str]:
         configured = self.get_param_value("worker python")
@@ -161,12 +186,16 @@ class Gemma4E4BTranslator(BaseTranslator):
         if not src_list:
             return []
 
-        if not osp.isfile(MODEL_PATH):
+        model_path = self.model_path
+        model_filename = self.model_filename
+        model_quantization = self.model_quantization
+
+        if not osp.isfile(model_path):
             return self._subprocess_error_translations(
                 src_list,
                 (
-                    f"Gemma4 GGUF Q4_K_M model file is missing: {MODEL_PATH}. "
-                    f"Download {MODEL_REPO_ID}/{MODEL_FILENAME} to {MODEL_DIR}."
+                    f"Gemma4 GGUF {model_quantization} model file is missing: {model_path}. "
+                    f"Download {MODEL_REPO_ID}/{model_filename} to {MODEL_DIR}."
                 ),
             )
 
@@ -178,7 +207,8 @@ class Gemma4E4BTranslator(BaseTranslator):
             )
 
         payload = {
-            "model_path": MODEL_PATH,
+            "model_path": model_path,
+            "model_quantization": model_quantization,
             "texts": src_list,
             "source_lang": self.lang_map[self.lang_source],
             "target_lang": self.lang_map[self.lang_target],
