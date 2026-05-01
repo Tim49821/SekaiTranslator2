@@ -175,6 +175,7 @@ class Canvas(QGraphicsScene):
     begin_scale_tool = Signal(QPointF)
     scale_tool = Signal(QPointF)
     end_scale_tool = Signal()
+    cancel_scale_tool = Signal()
     canvas_undostack_changed = Signal()
     
     imgtrans_proj: ProjImgTrans = None
@@ -275,6 +276,7 @@ class Canvas(QGraphicsScene):
         self.editor_index = 0 # 0: drawing 1: text editor
         self.mid_btn_pressed = False
         self.pan_initial_pos = QPoint(0, 0)
+        self.paint_busy = False
 
         self.saved_textundo_step = 0
         self.saved_drawundo_step = 0
@@ -594,7 +596,32 @@ class Canvas(QGraphicsScene):
         return self.drawMode() and self.gv.isVisible() and QApplication.keyboardModifiers() == Qt.KeyboardModifier.AltModifier
 
     def clearToolStates(self):
-        self.end_scale_tool.emit()
+        self.cancelActivePaintGesture()
+
+    def cancelActivePaintGesture(self) -> bool:
+        canceled = False
+        self.hide_rubber_band()
+
+        if self.creating_textblock:
+            self.creating_textblock = False
+            self.create_block_origin = None
+            self.txtblkShapeControl.hide()
+            self.txtblkShapeControl.showControls()
+            canceled = True
+
+        if self.stroke_img_item is not None:
+            if self.erase_img_key is not None:
+                self.drawingLayer.removeQImage(self.erase_img_key)
+            if self.stroke_img_item.scene() == self:
+                self.removeItem(self.stroke_img_item)
+            else:
+                self.stroke_img_item = None
+                self.erase_img_key = None
+            canceled = True
+
+        self.cancel_scale_tool.emit()
+        self.mid_btn_pressed = False
+        return canceled
 
     def selected_text_items(self, sort: bool = True) -> List[TextBlkItem]:
         sel_textitems = []
@@ -634,6 +661,9 @@ class Canvas(QGraphicsScene):
             return
         
         if self.imgtrans_proj.img_valid:
+            if self.paint_busy and self.drawMode():
+                event.accept()
+                return
             if self.textblock_mode and len(self.selectedItems()) == 0 and self.textEditMode():
                 if btn == Qt.MouseButton.RightButton:
                     return self.startCreateTextblock(event.scenePos())
@@ -645,13 +675,15 @@ class Canvas(QGraphicsScene):
                 # user is drawing using the pen/inpainting tool
                 if self.scale_tool_mode:
                     self.begin_scale_tool.emit(event.scenePos())
+                elif self.image_edit_mode == ImageEditMode.EraserTool:
+                    self.addStrokeImageItem(self.inpaintLayer.mapFromScene(event.scenePos()), self.erasing_pen, True)
                 elif self.painting:
                     self.addStrokeImageItem(self.inpaintLayer.mapFromScene(event.scenePos()), self.painting_pen)
 
             elif btn == Qt.MouseButton.RightButton:
                 # user is drawing using eraser
                 if self.painting:
-                    erasing = self.image_edit_mode == ImageEditMode.PenTool
+                    erasing = self.image_edit_mode in {ImageEditMode.PenTool, ImageEditMode.EraserTool}
                     self.addStrokeImageItem(self.inpaintLayer.mapFromScene(event.scenePos()), self.erasing_pen, erasing)
                 else:   # rubber band selection
                     self.rubber_band_origin = event.scenePos()
@@ -684,7 +716,10 @@ class Canvas(QGraphicsScene):
                 self.context_menu_requested.emit(event.screenPos(), False)
         if btn == Qt.MouseButton.LeftButton:
             if self.stroke_img_item is not None:
-                self.finish_painting.emit(self.stroke_img_item)
+                if self.erase_img_key is not None or self.image_edit_mode == ImageEditMode.EraserTool:
+                    self.finish_erasing.emit(self.stroke_img_item)
+                else:
+                    self.finish_painting.emit(self.stroke_img_item)
             elif self.scale_tool_mode:
                 self.end_scale_tool.emit()
         return super().mouseReleaseEvent(event)
@@ -731,6 +766,7 @@ class Canvas(QGraphicsScene):
         self.drawingLayer.setPixmap(drawing_map)
 
     def setPaintMode(self, painting: bool):
+        self.cancelActivePaintGesture()
         if painting:
             self.editing_textblkitem = None
             self.textblock_mode = False
@@ -741,7 +777,7 @@ class Canvas(QGraphicsScene):
 
     @property
     def painting(self):
-        return self.image_edit_mode == ImageEditMode.PenTool or self.image_edit_mode == ImageEditMode.InpaintTool
+        return self.image_edit_mode in {ImageEditMode.PenTool, ImageEditMode.InpaintTool, ImageEditMode.EraserTool}
 
     def setMaskTransparencyBySlider(self, slider_value: int):
         self.setMaskTransparency(slider_value / 100)
@@ -850,12 +886,9 @@ class Canvas(QGraphicsScene):
                 self.editing_textblkitem = textitem
 
     def clear_states(self):
-        self.creating_textblock = False
-        self.create_block_origin = None
+        self.cancelActivePaintGesture()
         self.editing_textblkitem = None
         self.gv.ctrl_pressed = False
-        if self.stroke_img_item is not None:
-            self.removeItem(self.stroke_img_item)
 
     def setProjSaveState(self, un_saved: bool):
         if un_saved == self.projstate_unsaved:
@@ -907,56 +940,68 @@ class Canvas(QGraphicsScene):
             self.setProjSaveState(True)
         else:
             self.setProjSaveState(False)
+        self.canvas_undostack_changed.emit()
 
     def on_textstack_changed(self):
         if self.num_pushed_textstep != self.saved_textundo_step or self.num_pushed_drawstep != self.saved_drawundo_step:
             self.setProjSaveState(True)
         else:
             self.setProjSaveState(False)
+        self.canvas_undostack_changed.emit()
         self.textstack_changed.emit()
 
     def redo_textedit(self):
+        if not self.text_undo_stack.canRedo():
+            return
         self.num_pushed_textstep += 1
         self.text_undo_stack.redo()
+        self.on_textstack_changed()
 
     def undo_textedit(self):
+        if not self.text_undo_stack.canUndo():
+            return
         if self.num_pushed_textstep > 0:
             self.num_pushed_textstep -= 1
         self.text_undo_stack.undo()
+        self.on_textstack_changed()
 
     def redo(self):
         if self.textEditMode():
             undo_stack = self.text_undo_stack
-            self.num_pushed_textstep += 1
-            self.on_textstack_changed()
         elif self.drawMode():
             undo_stack = self.draw_undo_stack
-            self.num_pushed_drawstep += 1
-            self.on_drawstack_changed()
         else:
             return
-        if undo_stack is not None:
-            undo_stack.redo()
-            if undo_stack == self.text_undo_stack:
-                self.txtblkShapeControl.updateBoundingRect()
+        if undo_stack is None or not undo_stack.canRedo():
+            return
+        undo_stack.redo()
+        if undo_stack == self.text_undo_stack:
+            self.num_pushed_textstep += 1
+            self.on_textstack_changed()
+            self.txtblkShapeControl.updateBoundingRect()
+        else:
+            self.num_pushed_drawstep += 1
+            self.on_drawstack_changed()
 
     def undo(self):
         if self.textEditMode():
             undo_stack = self.text_undo_stack
+        elif self.drawMode():
+            undo_stack = self.draw_undo_stack
+        else:
+            return
+        if undo_stack is None or not undo_stack.canUndo():
+            return
+        undo_stack.undo()
+        if undo_stack == self.text_undo_stack:
             if self.num_pushed_textstep > 0:
                 self.num_pushed_textstep -= 1
             self.on_textstack_changed()
-        elif self.drawMode():
-            undo_stack = self.draw_undo_stack
+            self.txtblkShapeControl.updateBoundingRect()
+        else:
             if self.num_pushed_drawstep > 0:
                 self.num_pushed_drawstep -= 1
             self.on_drawstack_changed()
-        else:
-            return
-        if undo_stack is not None:
-            undo_stack.undo()
-            if undo_stack == self.text_undo_stack:
-                self.txtblkShapeControl.updateBoundingRect()
 
     def clear_undostack(self, update_saved_step=False):
         if update_saved_step:
@@ -966,14 +1011,17 @@ class Canvas(QGraphicsScene):
             self.num_pushed_drawstep = 0
         self.draw_undo_stack.clear()
         self.text_undo_stack.clear()
+        self.canvas_undostack_changed.emit()
 
     def clear_text_stack(self):
         self.num_pushed_textstep = 0
         self.text_undo_stack.clear()
+        self.canvas_undostack_changed.emit()
 
     def clear_draw_stack(self):
         self.num_pushed_drawstep = 0
         self.draw_undo_stack.clear()
+        self.canvas_undostack_changed.emit()
 
     def update_saved_undostep(self):
         self.saved_drawundo_step = self.num_pushed_drawstep
@@ -989,4 +1037,3 @@ class Canvas(QGraphicsScene):
         self.blockSignals(True)
         self.text_undo_stack.blockSignals(True)
         self.draw_undo_stack.blockSignals(True)
-

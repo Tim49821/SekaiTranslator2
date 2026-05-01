@@ -103,6 +103,8 @@ class DrawPanelConfig(Config):
     pentool_color: List = field(default_factory=lambda: [0, 0, 0])
     pentool_width: float = 30.
     pentool_shape: int = 0
+    erasertool_width: float = 30.
+    erasertool_shape: int = 0
     inpainter_width: float = 30.
     inpainter_shape: int = 0
     current_tool: int = 0

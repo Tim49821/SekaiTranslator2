@@ -26,6 +26,7 @@ INPAINT_BRUSH_COLOR = QColor(127, 0, 127, 127)
 MAX_PEN_SIZE = 1000
 MIN_PEN_SIZE = 1
 TOOLNAME_POINT_SIZE = 13
+MAX_CURSOR_PIXMAP_SIZE = 256
 
 class DrawToolCheckBox(QCheckBox):
     checked = Signal()
@@ -186,6 +187,49 @@ class PenConfigPanel(Widget):
         return self.shapeCombobox.currentIndex()
 
 
+class EraserConfigPanel(Widget):
+    thicknessChanged = Signal(int)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.thicknessSlider = PaintQSlider()
+        self.thicknessSlider.setRange(MIN_PEN_SIZE, MAX_PEN_SIZE)
+        self.thicknessSlider.valueChanged.connect(self.on_thickness_changed)
+        self.thicknessSlider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        thickness_layout = QHBoxLayout()
+        thickness_label = ToolNameLabel(100, self.tr('Thickness'))
+        thickness_layout.addWidget(thickness_label)
+        thickness_layout.addWidget(self.thicknessSlider)
+        thickness_layout.setSpacing(10)
+
+        shape_label = ToolNameLabel(100, self.tr('Shape'))
+        self.shapeCombobox = QComboBox(self)
+        self.shapeCombobox.addItems([
+            self.tr('Circle'),
+            self.tr('Rectangle'),
+            # self.tr('Triangle')
+        ])
+        self.shapeChanged = self.shapeCombobox.currentIndexChanged
+        shape_layout = QHBoxLayout()
+        shape_layout.addWidget(shape_label)
+        shape_layout.addWidget(self.shapeCombobox)
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(thickness_layout)
+        layout.addLayout(shape_layout)
+        layout.setSpacing(20)
+
+    def on_thickness_changed(self):
+        if self.thicknessSlider.hasFocus():
+            self.thicknessChanged.emit(self.thicknessSlider.value())
+
+    @property
+    def shape(self):
+        return self.shapeCombobox.currentIndex()
+
+
 class RectPanel(Widget):
     dilate_ksize_changed = Signal()
     method_changed = Signal(int)
@@ -283,6 +327,7 @@ class DrawingPanel(Widget):
         self.rect_inpaint_dict: dict = None
         self.inpaint_mask_array: np.ndarray = None
         self.extracted_imask_array: np.ndarray = None
+        self.paint_busy = False
 
         border_pen = QPen(INPAINT_BRUSH_COLOR, 3, Qt.PenStyle.DashLine)
         self.inpaint_mask_item: PixmapItem = PixmapItem(border_pen)
@@ -294,6 +339,7 @@ class DrawingPanel(Widget):
         canvas.begin_scale_tool.connect(self.on_begin_scale_tool)
         canvas.scale_tool.connect(self.on_scale_tool)
         canvas.end_scale_tool.connect(self.on_end_scale_tool)
+        canvas.cancel_scale_tool.connect(self.on_cancel_scale_tool)
         canvas.scalefactor_changed.connect(self.on_canvas_scalefactor_changed)
         canvas.end_create_rect.connect(self.on_end_create_rect)
 
@@ -326,16 +372,25 @@ class DrawingPanel(Widget):
         self.penConfigPanel.colorChanged.connect(self.setPenToolColor)
         self.penConfigPanel.shapeChanged.connect(self.setPenShape)
 
+        self.eraserTool = DrawToolCheckBox()
+        self.eraserTool.setObjectName("DrawEraserTool")
+        self.eraserTool.checked.connect(self.on_use_erasertool)
+        self.eraserConfigPanel = EraserConfigPanel()
+        self.eraserConfigPanel.thicknessChanged.connect(self.setEraserToolWidth)
+        self.eraserConfigPanel.shapeChanged.connect(self.setEraserShape)
+
         toolboxlayout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         toolboxlayout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         toolboxlayout.addWidget(self.handTool)
         toolboxlayout.addWidget(self.inpaintTool)
         toolboxlayout.addWidget(self.penTool)
+        toolboxlayout.addWidget(self.eraserTool)
         toolboxlayout.addWidget(self.rectTool)
 
         self.canvas.painting_pen = self.pentool_pen = \
             QPen(Qt.GlobalColor.black, 1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         self.canvas.erasing_pen = self.erasing_pen = QPen(Qt.GlobalColor.black, 1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        self.erasertool_pen = QPen(Qt.GlobalColor.black, 1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         self.inpaint_pen = QPen(INPAINT_BRUSH_COLOR, 1, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         
         # self.setPenToolWidth(10)
@@ -345,6 +400,7 @@ class DrawingPanel(Widget):
         self.toolConfigStackwidget.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Minimum)
         self.toolConfigStackwidget.addWidget(self.inpaintConfigPanel)
         self.toolConfigStackwidget.addWidget(self.penConfigPanel)
+        self.toolConfigStackwidget.addWidget(self.eraserConfigPanel)
         self.toolConfigStackwidget.addWidget(self.rectPanel)
 
         self.maskTransperancySlider = PaintQSlider()
@@ -362,6 +418,8 @@ class DrawingPanel(Widget):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
     def setCurrentToolByName(self, tool_name: str):
+        if self.paint_busy:
+            return
         try:
             set_method = f'on_use_{tool_name}tool'
             set_method = getattr(self, set_method)
@@ -388,6 +446,63 @@ class DrawingPanel(Widget):
         module_manager.canvas_inpaint_finished.connect(self.on_inpaint_finished)
         module_manager.inpaint_thread.inpaint_failed.connect(self.on_inpaint_failed)
 
+    def setPaintBusy(self, busy: bool):
+        if self.paint_busy == busy:
+            return
+        self.paint_busy = busy
+        self.canvas.paint_busy = busy
+        for tool in (self.handTool, self.inpaintTool, self.penTool, self.eraserTool, self.rectTool):
+            tool.setEnabled(not busy)
+        self.toolConfigStackwidget.setEnabled(not busy)
+        if not busy:
+            self.restoreCurrentToolMode()
+
+    def restoreCurrentToolMode(self):
+        if self.currentTool == self.handTool:
+            self.canvas.image_edit_mode = ImageEditMode.HandTool
+            self.canvas.gv.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        elif self.currentTool == self.inpaintTool:
+            self.canvas.image_edit_mode = ImageEditMode.InpaintTool
+            self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
+            if self.isVisible():
+                self.setInpaintCursor()
+        elif self.currentTool == self.penTool:
+            self.canvas.image_edit_mode = ImageEditMode.PenTool
+            self.canvas.erasing_pen = self.erasing_pen
+            self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
+            if self.isVisible():
+                self.setPenCursor()
+        elif self.currentTool == self.eraserTool:
+            self.canvas.image_edit_mode = ImageEditMode.EraserTool
+            self.canvas.painting_pen = self.erasertool_pen
+            self.canvas.erasing_pen = self.erasertool_pen
+            self.canvas.painting_shape = self.eraserConfigPanel.shape
+            self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
+            if self.isVisible():
+                self.setEraserCursor()
+        elif self.currentTool == self.rectTool:
+            self.canvas.image_edit_mode = ImageEditMode.RectTool
+            self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
+            if self.isVisible():
+                self.setCrossCursor()
+
+    def cancelActiveOperation(self) -> bool:
+        if self.paint_busy:
+            return False
+        canceled = False
+        if self.scale_tool_pos is not None:
+            self.on_cancel_scale_tool()
+            canceled = True
+        if self.inpaint_stroke is not None or self.rect_inpaint_dict is not None or \
+                (self.inpaint_mask_item is not None and self.inpaint_mask_item.scene() == self.canvas):
+            self.clearInpaintItems()
+            canceled = True
+        if self.canvas.cancelActivePaintGesture():
+            canceled = True
+        if canceled:
+            self.restoreCurrentToolMode()
+        return canceled
+
     def setInpaintToolWidth(self, width):
         self.inpaint_pen.setWidthF(width)
         pcfg.drawpanel.inpainter_width = width
@@ -395,9 +510,10 @@ class DrawingPanel(Widget):
             self.setInpaintCursor()
 
     def setInpaintShape(self, shape: int):
-        self.setInpaintCursor()
         pcfg.drawpanel.inpainter_shape = shape
         self.canvas.painting_shape = shape
+        if self.isVisible():
+            self.setInpaintCursor()
 
     def setPenToolWidth(self, width):
         self.pentool_pen.setWidthF(width)
@@ -405,6 +521,12 @@ class DrawingPanel(Widget):
         pcfg.drawpanel.pentool_width = self.pentool_pen.widthF()
         if self.isVisible():
             self.setPenCursor()
+
+    def setEraserToolWidth(self, width):
+        self.erasertool_pen.setWidthF(width)
+        pcfg.drawpanel.erasertool_width = self.erasertool_pen.widthF()
+        if self.isVisible():
+            self.setEraserCursor()
 
     def setPenToolColor(self, color: Union[QColor, Tuple, List]):
         if not isinstance(color, QColor):
@@ -417,11 +539,20 @@ class DrawingPanel(Widget):
         self.penConfigPanel.alphaSlider.setValue(color.alpha())
 
     def setPenShape(self, shape: int):
-        self.setPenCursor()
         self.canvas.painting_shape = shape
         pcfg.drawpanel.pentool_shape = shape
+        if self.isVisible():
+            self.setPenCursor()
+
+    def setEraserShape(self, shape: int):
+        self.canvas.painting_shape = shape
+        pcfg.drawpanel.erasertool_shape = shape
+        if self.isVisible():
+            self.setEraserCursor()
 
     def on_use_handtool(self) -> None:
+        if self.paint_busy:
+            return
         if self.currentTool is not None and self.currentTool != self.handTool:
             self.currentTool.setChecked(False)
         self.currentTool = self.handTool
@@ -430,6 +561,8 @@ class DrawingPanel(Widget):
         self.canvas.image_edit_mode = ImageEditMode.HandTool
 
     def on_use_inpainttool(self) -> None:
+        if self.paint_busy:
+            return
         if self.currentTool is not None and self.currentTool != self.inpaintTool:
             self.currentTool.setChecked(False)
         self.currentTool = self.inpaintTool
@@ -444,6 +577,8 @@ class DrawingPanel(Widget):
             self.setInpaintCursor()
 
     def on_use_pentool(self) -> None:
+        if self.paint_busy:
+            return
         if self.currentTool is not None and self.currentTool != self.penTool:
             self.currentTool.setChecked(False)
         self.currentTool = self.penTool
@@ -457,7 +592,25 @@ class DrawingPanel(Widget):
             self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setPenCursor()
 
+    def on_use_erasertool(self) -> None:
+        if self.paint_busy:
+            return
+        if self.currentTool is not None and self.currentTool != self.eraserTool:
+            self.currentTool.setChecked(False)
+        self.currentTool = self.eraserTool
+        pcfg.drawpanel.current_tool = ImageEditMode.EraserTool
+        self.canvas.painting_pen = self.erasertool_pen
+        self.canvas.erasing_pen = self.erasertool_pen
+        self.canvas.painting_shape = self.eraserConfigPanel.shape
+        self.canvas.image_edit_mode = ImageEditMode.EraserTool
+        self.toolConfigStackwidget.setCurrentWidget(self.eraserConfigPanel)
+        if self.isVisible():
+            self.canvas.gv.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setEraserCursor()
+
     def on_use_recttool(self) -> None:
+        if self.paint_busy:
+            return
         if self.currentTool is not None and self.currentTool != self.rectTool:
             self.currentTool.setChecked(False)
         self.currentTool = self.rectTool
@@ -472,6 +625,10 @@ class DrawingPanel(Widget):
         self.setPenToolColor(config.pentool_color)
         self.penConfigPanel.thicknessSlider.setValue(int(config.pentool_width))
         self.penConfigPanel.shapeCombobox.setCurrentIndex(config.pentool_shape)
+
+        self.setEraserToolWidth(getattr(config, 'erasertool_width', config.pentool_width))
+        self.eraserConfigPanel.thicknessSlider.setValue(int(getattr(config, 'erasertool_width', config.pentool_width)))
+        self.eraserConfigPanel.shapeCombobox.setCurrentIndex(getattr(config, 'erasertool_shape', config.pentool_shape))
         
         self.setInpaintToolWidth(config.inpainter_width)
         self.inpaintConfigPanel.thicknessSlider.setValue(int(config.inpainter_width))
@@ -486,6 +643,8 @@ class DrawingPanel(Widget):
             self.inpaintTool.setChecked(True)
         elif config.current_tool == ImageEditMode.PenTool:
             self.penTool.setChecked(True)
+        elif config.current_tool == ImageEditMode.EraserTool:
+            self.eraserTool.setChecked(True)
         elif config.current_tool == ImageEditMode.RectTool:
             self.rectTool.setChecked(True)
 
@@ -494,17 +653,20 @@ class DrawingPanel(Widget):
         cross_len = cross_size // 4
         thickness = 3
         if pen_color is None:
-            pen_color = self.pentool_pen.color()
+            pen_color = QColor(self.pentool_pen.color())
+        else:
+            pen_color = QColor(pen_color)
         if pen_size is None:
             pen_size = self.pentool_pen.width()
-        pen_size *= self.canvas.scale_factor
-        map_size = max(cross_size+7, pen_size)
+        pen_size = max(MIN_PEN_SIZE, pen_size * self.canvas.scale_factor)
+        draw_pen_size = min(pen_size, MAX_CURSOR_PIXMAP_SIZE - 2 * thickness)
+        map_size = int(max(cross_size + 7, draw_pen_size + 2 * thickness))
         cursor_center = map_size // 2
-        pen_radius = pen_size // 2
+        pen_radius = draw_pen_size / 2
         pen_color.setAlpha(127)
         pen = QPen(pen_color, thickness, Qt.PenStyle.DotLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         pen.setDashPattern([3, 6])
-        if pen_size < 20:
+        if draw_pen_size < 20:
             pen.setStyle(Qt.PenStyle.SolidLine)
 
         cur_pixmap = QPixmap(QSizeF(map_size, map_size).toSize())
@@ -515,8 +677,8 @@ class DrawingPanel(Widget):
         if draw_shape:
             shape_rect = QRectF(cursor_center-pen_radius + thickness, 
                                 cursor_center-pen_radius + thickness, 
-                                pen_size - 2*thickness, 
-                                pen_size - 2*thickness)
+                                max(1, draw_pen_size - 2*thickness),
+                                max(1, draw_pen_size - 2*thickness))
             if shape == PenShape.Circle:
                 painter.drawEllipse(shape_rect)
             elif shape == PenShape.Rectangle:
@@ -550,6 +712,8 @@ class DrawingPanel(Widget):
         pass
 
     def scalePen(self, scale_factor):
+        if self.paint_busy:
+            return
         if self.currentTool == self.penTool:
             val = self.pentool_pen.widthF()
             new_val = round(int(val * scale_factor))
@@ -557,8 +721,20 @@ class DrawingPanel(Widget):
                 new_val = max(val+1, new_val)
             else:
                 new_val = min(val-1, new_val)
+            new_val = int(np.clip(new_val, MIN_PEN_SIZE, MAX_PEN_SIZE))
             self.penConfigPanel.thicknessSlider.setValue(int(new_val))
             self.setPenToolWidth(self.penConfigPanel.thicknessSlider.value())
+
+        elif self.currentTool == self.eraserTool:
+            val = self.erasertool_pen.widthF()
+            new_val = round(int(val * scale_factor))
+            if scale_factor > 1:
+                new_val = max(val+1, new_val)
+            else:
+                new_val = min(val-1, new_val)
+            new_val = int(np.clip(new_val, MIN_PEN_SIZE, MAX_PEN_SIZE))
+            self.eraserConfigPanel.thicknessSlider.setValue(int(new_val))
+            self.setEraserToolWidth(self.eraserConfigPanel.thicknessSlider.value())
 
         elif self.currentTool == self.inpaintTool:
             val = self.inpaint_pen.widthF()
@@ -567,6 +743,7 @@ class DrawingPanel(Widget):
                 new_val = max(val+1, new_val)
             else:
                 new_val = min(val-1, new_val)
+            new_val = int(np.clip(new_val, MIN_PEN_SIZE, MAX_PEN_SIZE))
             self.inpaintConfigPanel.thicknessSlider.setValue(int(new_val))
             self.setInpaintToolWidth(self.inpaintConfigPanel.thicknessSlider.value())
 
@@ -621,7 +798,7 @@ class DrawingPanel(Widget):
             self.canvas.push_undo_command(InpaintUndoCommand(self.canvas, erased_img, mask, inpaint_rect))
             self.canvas.removeItem(stroke_item)
 
-        elif self.currentTool == self.penTool:
+        elif self.currentTool in (self.penTool, self.eraserTool):
             rect, _, qimg = stroke_item.clip()
             if self.canvas.erase_img_key is not None:
                 self.canvas.drawingLayer.removeQImage(self.canvas.erase_img_key)
@@ -632,6 +809,8 @@ class DrawingPanel(Widget):
         
 
     def runInpaint(self, inpaint_dict=None):
+        if self.paint_busy:
+            return
 
         if inpaint_dict is None:
             if self.inpaint_stroke is None:
@@ -662,28 +841,39 @@ class DrawingPanel(Widget):
             inpaint_dict = {'img': img, 'mask': mask, 'inpaint_rect': inpaint_rect}
 
         self.canvas.image_edit_mode = ImageEditMode.NONE
-        self.module_manager.canvas_inpaint(inpaint_dict)
+        self.setPaintBusy(True)
+        try:
+            self.module_manager.canvas_inpaint(inpaint_dict)
+        except Exception:
+            self.setPaintBusy(False)
+            self.clearInpaintItems()
+            raise
 
     def on_inpaint_finished(self, inpaint_dict):
-        inpainted = inpaint_dict['inpainted']
-        inpaint_rect = inpaint_dict['inpaint_rect']
-        mask_array = self.canvas.imgtrans_proj.mask_array
-        mask = cv2.bitwise_or(inpaint_dict['mask'], mask_array[inpaint_rect[1]: inpaint_rect[3], inpaint_rect[0]: inpaint_rect[2]])
-        self.canvas.push_undo_command(InpaintUndoCommand(self.canvas, inpainted, mask, inpaint_rect))
-        self.clearInpaintItems()
-
-    def on_inpaint_failed(self):
-        if self.currentTool == self.inpaintTool and self.inpaint_stroke is not None:
+        try:
+            inpainted = inpaint_dict['inpainted']
+            inpaint_rect = inpaint_dict['inpaint_rect']
+            mask_array = self.canvas.imgtrans_proj.mask_array
+            mask = cv2.bitwise_or(inpaint_dict['mask'], mask_array[inpaint_rect[1]: inpaint_rect[3], inpaint_rect[0]: inpaint_rect[2]])
+            self.canvas.push_undo_command(InpaintUndoCommand(self.canvas, inpainted, mask, inpaint_rect))
+        finally:
+            self.setPaintBusy(False)
             self.clearInpaintItems()
 
+    def on_inpaint_failed(self):
+        self.setPaintBusy(False)
+        self.clearInpaintItems()
+
     def on_canvasctrl_released(self):
-        if self.isVisible() and self.currentTool == self.inpaintTool:
+        if self.isVisible() and self.currentTool == self.inpaintTool and not self.paint_busy:
             self.runInpaint()
 
     def on_begin_scale_tool(self, pos: QPointF):
         
         if self.currentTool == self.penTool:
             circle_pen = QPen(self.pentool_pen)
+        elif self.currentTool == self.eraserTool:
+            circle_pen = QPen(self.erasertool_pen)
         elif self.currentTool == self.inpaintTool:
             circle_pen = QPen(self.inpaint_pen)
         else:
@@ -725,9 +915,26 @@ class DrawingPanel(Widget):
             self.setPenToolWidth(circle_size)
             self.penConfigPanel.thicknessSlider.setValue(circle_size)
             self.setPenCursor()
+        elif self.currentTool == self.eraserTool:
+            self.setEraserToolWidth(circle_size)
+            self.eraserConfigPanel.thicknessSlider.setValue(circle_size)
+            self.setEraserCursor()
         elif self.currentTool == self.inpaintTool:
             self.setInpaintToolWidth(circle_size)
             self.inpaintConfigPanel.thicknessSlider.setValue(circle_size)
+            self.setInpaintCursor()
+
+    def on_cancel_scale_tool(self):
+        if self.scale_tool_pos is None:
+            return
+        self.scale_tool_pos = None
+        if self.scale_circle.scene() == self.canvas:
+            self.canvas.removeItem(self.scale_circle)
+        if self.currentTool == self.penTool:
+            self.setPenCursor()
+        elif self.currentTool == self.eraserTool:
+            self.setEraserCursor()
+        elif self.currentTool == self.inpaintTool:
             self.setInpaintCursor()
 
     def on_canvas_scalefactor_changed(self):
@@ -735,11 +942,16 @@ class DrawingPanel(Widget):
             return
         if self.currentTool == self.penTool:
             self.setPenCursor()
+        elif self.currentTool == self.eraserTool:
+            self.setEraserCursor()
         elif self.currentTool == self.inpaintTool:
             self.setInpaintCursor()
 
     def setPenCursor(self):
         self.canvas.gv.setCursor(self.get_pen_cursor(shape=self.penConfigPanel.shape))
+
+    def setEraserCursor(self):
+        self.canvas.gv.setCursor(self.get_pen_cursor(QColor(230, 230, 230), self.erasertool_pen.width(), shape=self.eraserConfigPanel.shape))
 
     def setInpaintCursor(self):
         self.canvas.gv.setCursor(self.get_pen_cursor(INPAINT_BRUSH_COLOR, self.inpaint_pen.width(), shape=self.inpaintConfigPanel.shape))
@@ -836,6 +1048,8 @@ class DrawingPanel(Widget):
             self.clearInpaintItems()
 
     def hideEvent(self, e) -> None:
+        if not self.paint_busy:
+            self.cancelActiveOperation()
         self.clearInpaintItems()
         return super().hideEvent(e)
 
@@ -857,4 +1071,5 @@ class DrawingPanel(Widget):
                 self.canvas.image_edit_mode = ImageEditMode.InpaintTool
 
     def handle_page_changed(self):
+        self.setPaintBusy(False)
         self.clearInpaintItems()

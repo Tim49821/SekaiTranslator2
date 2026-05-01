@@ -189,6 +189,7 @@ class MainWindow(mainwindow_cls):
         self.canvas.gv.hide_canvas.connect(self.onHideCanvas)
         self.canvas.proj_savestate_changed.connect(self.on_savestate_changed)
         self.canvas.textstack_changed.connect(self.on_textstack_changed)
+        self.canvas.canvas_undostack_changed.connect(self.updateUndoRedoButtons)
         self.canvas.run_blktrans.connect(self.on_run_blktrans)
         self.canvas.drop_open_folder.connect(self.dropOpenDir)
         self.canvas.originallayer_trans_slider = self.bottomBar.originalSlider
@@ -395,13 +396,12 @@ class MainWindow(mainwindow_cls):
         if pcfg.let_show_only_custom_fonts_flag:
             self.on_show_only_custom_font(True)
 
-        textblock_mode = pcfg.imgtrans_textblock
-        if pcfg.imgtrans_textedit:
-            if textblock_mode:
-                self.bottomBar.textblockChecker.setChecked(True)
-            self.bottomBar.texteditChecker.click()
-        elif pcfg.imgtrans_paintmode:
-            self.bottomBar.paintChecker.click()
+        if pcfg.imgtrans_paintmode:
+            self.applyEditorMode('paint')
+        elif pcfg.imgtrans_textedit:
+            self.applyEditorMode('text')
+        else:
+            self.applyEditorMode('none')
 
         self.textPanel.formatpanel.textstyle_panel.initStyles(text_styles)
 
@@ -750,6 +750,12 @@ class MainWindow(mainwindow_cls):
 
         shortcutTextblock = QShortcut(QKeySequence("W"), self)
         shortcutTextblock.activated.connect(self.shortcutTextblock)
+        shortcutUndo = QShortcut(QKeySequence.StandardKey.Undo, self)
+        shortcutUndo.activated.connect(self.on_undo)
+        shortcutRedo = QShortcut(QKeySequence.StandardKey.Redo, self)
+        shortcutRedo.activated.connect(self.on_redo)
+        shortcutRedoAlt = QShortcut(QKeySequence("Ctrl+Y"), self)
+        shortcutRedoAlt.activated.connect(self.on_redo)
         shortcutZoomIn = QShortcut(QKeySequence.StandardKey.ZoomIn, self)
         shortcutZoomIn.activated.connect(self.canvas.gv.scale_up_signal)
         shortcutZoomOut = QShortcut(QKeySequence.StandardKey.ZoomOut, self)
@@ -773,8 +779,12 @@ class MainWindow(mainwindow_cls):
 
         shortcutDelete = QShortcut(QKeySequence.StandardKey.Delete, self)
         shortcutDelete.activated.connect(self.shortcutDelete)
+        shortcutBrushDown = QShortcut(QKeySequence("["), self)
+        shortcutBrushDown.activated.connect(self.shortcutBrushDown)
+        shortcutBrushUp = QShortcut(QKeySequence("]"), self)
+        shortcutBrushUp.activated.connect(self.shortcutBrushUp)
 
-        drawpanel_shortcuts = {'hand': 'H', 'rect': 'R', 'inpaint': 'J', 'pen': 'B'}
+        drawpanel_shortcuts = {'hand': 'H', 'rect': 'R', 'inpaint': 'J', 'pen': 'B', 'eraser': 'E'}
         for tool_name, shortcut_key in drawpanel_shortcuts.items():
             shortcut = QShortcut(QKeySequence(shortcut_key), self)
             shortcut.activated.connect(partial(self.drawingPanel.shortcutSetCurrentToolByName, tool_name))
@@ -835,7 +845,7 @@ class MainWindow(mainwindow_cls):
 
     def shortcutCtrlD(self):
         if self.centralStackWidget.currentIndex() == 0:
-            if self.drawingPanel.isVisible():
+            if self.drawingPanel.isVisible() and not self.drawingPanel.paint_busy:
                 if self.drawingPanel.currentTool == self.drawingPanel.rectTool:
                     self.drawingPanel.rectPanel.delete_btn.click()
             elif self.canvas.textEditMode():
@@ -848,9 +858,17 @@ class MainWindow(mainwindow_cls):
 
     def shortcutSpace(self):
         if self.centralStackWidget.currentIndex() == 0:
-            if self.drawingPanel.isVisible():
+            if self.drawingPanel.isVisible() and not self.drawingPanel.paint_busy:
                 if self.drawingPanel.currentTool == self.drawingPanel.rectTool:
                     self.drawingPanel.rectPanel.inpaint_btn.click()
+
+    def shortcutBrushDown(self):
+        if self.centralStackWidget.currentIndex() == 0 and self.drawingPanel.isVisible():
+            self.drawingPanel.on_decre_pensize()
+
+    def shortcutBrushUp(self):
+        if self.centralStackWidget.currentIndex() == 0 and self.drawingPanel.isVisible():
+            self.drawingPanel.on_incre_pensize()
 
     def shortcutBold(self):
         if self.textPanel.formatpanel.isVisible():
@@ -873,6 +891,13 @@ class MainWindow(mainwindow_cls):
 
     def on_undo(self):
         self.canvas.undo()
+
+    def updateUndoRedoButtons(self):
+        undo_stack = self.canvas.get_active_undostack()
+        can_undo = undo_stack.canUndo() if undo_stack is not None else False
+        can_redo = undo_stack.canRedo() if undo_stack is not None else False
+        self.titleBar.undoBtn.setEnabled(can_undo)
+        self.titleBar.redoBtn.setEnabled(can_redo)
 
     def on_page_search(self):
         if self.canvas.gv.isVisible():
@@ -1127,9 +1152,33 @@ class MainWindow(mainwindow_cls):
             self.canvas.search_widget.hide()
         elif self.canvas.editing_textblkitem is not None and self.canvas.editing_textblkitem.isEditing():
             self.canvas.editing_textblkitem.endEdit()
+        elif self.drawingPanel.isVisible() and self.drawingPanel.cancelActiveOperation():
+            return
+        elif self.canvas.cancelActivePaintGesture():
+            return
 
-    def setPaintMode(self):
-        if self.bottomBar.paintChecker.isChecked():
+    def applyEditorMode(self, mode: str):
+        if self.drawingPanel.paint_busy and mode != 'paint':
+            mode = 'paint'
+        paint_mode = mode == 'paint'
+        text_mode = mode == 'text'
+        textblock_mode = text_mode and (pcfg.imgtrans_textblock or self.bottomBar.textblockChecker.isChecked())
+
+        self.bottomBar.paintChecker.blockSignals(True)
+        self.bottomBar.texteditChecker.blockSignals(True)
+        self.bottomBar.textblockChecker.blockSignals(True)
+        self.bottomBar.paintChecker.setChecked(paint_mode)
+        self.bottomBar.texteditChecker.setChecked(text_mode)
+        self.bottomBar.textblockChecker.setChecked(textblock_mode)
+        self.bottomBar.paintChecker.blockSignals(False)
+        self.bottomBar.texteditChecker.blockSignals(False)
+        self.bottomBar.textblockChecker.blockSignals(False)
+
+        pcfg.imgtrans_paintmode = paint_mode
+        pcfg.imgtrans_textedit = text_mode
+        pcfg.imgtrans_textblock = textblock_mode
+
+        if paint_mode:
             if self.rightComicTransStackPanel.isHidden():
                 self.rightComicTransStackPanel.show()
             self.rightComicTransStackPanel.setCurrentIndex(0)
@@ -1137,24 +1186,31 @@ class MainWindow(mainwindow_cls):
             self.bottomBar.originalSlider.show()
             self.bottomBar.textlayerSlider.show()
             self.bottomBar.textblockChecker.hide()
-        else:
-            self.canvas.setPaintMode(False)
-            self.rightComicTransStackPanel.setHidden(True)
-        self.st_manager.setTextEditMode(False)
-
-    def setTextEditMode(self):
-        if self.bottomBar.texteditChecker.isChecked():
+            self.canvas.setTextBlockMode(False)
+            self.st_manager.showTextblkItemRect(False)
+            self.st_manager.setTextEditMode(False)
+        elif text_mode:
             if self.rightComicTransStackPanel.isHidden():
                 self.rightComicTransStackPanel.show()
             self.bottomBar.textblockChecker.show()
             self.rightComicTransStackPanel.setCurrentIndex(1)
+            self.canvas.setPaintMode(False)
             self.st_manager.setTextEditMode(True)
             self.setTextBlockMode()
         else:
             self.bottomBar.textblockChecker.hide()
-            self.rightComicTransStackPanel.setHidden(True)
+            self.canvas.setPaintMode(False)
+            self.canvas.setTextBlockMode(False)
+            self.st_manager.showTextblkItemRect(False)
             self.st_manager.setTextEditMode(False)
-        self.canvas.setPaintMode(False)
+            self.rightComicTransStackPanel.setHidden(True)
+        self.updateUndoRedoButtons()
+
+    def setPaintMode(self):
+        self.applyEditorMode('paint' if self.bottomBar.paintChecker.isChecked() else 'none')
+
+    def setTextEditMode(self):
+        self.applyEditorMode('text' if self.bottomBar.texteditChecker.isChecked() else 'none')
 
     def setTextBlockMode(self):
         mode = self.bottomBar.textblockChecker.isChecked()
@@ -1219,7 +1275,7 @@ class MainWindow(mainwindow_cls):
                     if inpainted is not None:
                         self.imsave_thread.saveImg(inpainted_path, inpainted, save_params={'ext': pcfg.intermediate_imgsave_ext}, keep_alpha=self.imgtrans_proj.current_has_alpha())
             except Exception as e:
-                LOGGER.error(f"Failed to save project files: {e}")
+                LOGGER.error(f"Failed to save project/intermediate files for {self.imgtrans_proj.current_img}: {e}")
 
         # Render the final result image properly
         try:
@@ -1227,7 +1283,7 @@ class MainWindow(mainwindow_cls):
             imsave_path = self.imgtrans_proj.get_result_path(self.imgtrans_proj.current_img)
             self.imsave_thread.saveImg(imsave_path, img, self.imgtrans_proj.current_img, save_params={'ext': pcfg.imgsave_ext, 'quality': pcfg.imgsave_quality}, keep_alpha=self.imgtrans_proj.current_has_alpha())
         except Exception as e:
-            LOGGER.error(f"Failed to render and save result image: {e}")
+            LOGGER.error(f"Failed to render/save result image for {self.imgtrans_proj.current_img}: {e}")
             
         self.canvas.setProjSaveState(False)
         self.canvas.update_saved_undostep()
@@ -1643,6 +1699,7 @@ class MainWindow(mainwindow_cls):
         if not self.canvas.textEditMode() and self.canvas.search_widget.isVisible():
             self.canvas.search_widget.hide()
         self.canvas.updateLayers()
+        self.updateUndoRedoButtons()
 
     def import_tstyles(self):
         ddir = osp.dirname(pcfg.text_styles_path)

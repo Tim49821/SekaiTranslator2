@@ -1,0 +1,10 @@
+[INFO] launch:main:258 - set display language to ko_KR
+[INFO] mainwindow:on_finish_settranslator:300 - Translator set to Gemma 4 E4B-it
+[INFO] mainwindow:on_finish_setdetector:272 - Text detector set to ctd
+[INFO] mainwindow:on_finish_setocr:281 - OCR set to PaddleOCRVLManga
+[INFO] mainwindow:on_finish_setinpainter:290 - Inpainter set to lama_large_512px
+[DEBUG] proj_imgtrans:save:345 - project saved to /Volumes/990 PRO/번역/一歌、陵辱/imgtrans_.json
+[DEBUG] proj_imgtrans:save:345 - project saved to /Volumes/990 PRO/번역/一歌、陵辱/imgtrans_.json
+[DEBUG] mainwindow:manual_save:1224 - Manually saving...
+[DEBUG] proj_imgtrans:save:345 - project saved to /Volumes/990 PRO/번역/一歌、陵辱/imgtrans_.json
+[INFO] config:save_config:339 - Config saved

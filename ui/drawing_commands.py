@@ -35,7 +35,11 @@ class StrokeItemUndoCommand(QUndoCommand):
     def redo(self):
         if self.qimg is not None:
             self.target_layer.addQImage(self.x, self.y, self.qimg, self.compose_mode, self.key)
-            self.target_layer.scene().update()
+            scene = self.target_layer.scene()
+            if scene is not None:
+                scene.update()
+            else:
+                self.target_layer.update()
 
 
 class InpaintUndoCommand(QUndoCommand):

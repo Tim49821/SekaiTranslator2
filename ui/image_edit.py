@@ -16,6 +16,7 @@ class ImageEditMode:
     InpaintTool = 1
     PenTool = 2
     RectTool = 3
+    EraserTool = 4
 
 class PenShape:
     Circle = 0
@@ -68,7 +69,10 @@ class StrokeImgItem(QGraphicsItem):
 
     def clip(self, mask_only=False, format=QImage.Format.Format_ARGB32_Premultiplied) -> Tuple[List, np.ndarray, QImage]:
         img_array = pixmap2ndarray(self._img, True)
-        ar = cv2.boundingRect(cv2.findNonZero(img_array[..., -1]))
+        nonzero = cv2.findNonZero(img_array[..., -1])
+        if nonzero is None:
+            return None, None, None
+        ar = cv2.boundingRect(nonzero)
         img_array = img_array[ar[1]: ar[1] + ar[3], ar[0]: ar[0] + ar[2]]
         if not (ar[2] > 0 and ar[3] > 0):
             return None, None, None
@@ -148,12 +152,15 @@ class DrawingLayer(QGraphicsPixmapItem):
     def addQImage(self, x: int, y: int, qimg: QImage, compose_mode, key: str):
         self.qimg_dict[key] = qimg
         self.drawing_items_info[key] = {'pos': [x, y], 'compose': compose_mode}
+        self.drawed_pixmap = None
         self.update()
 
     def removeQImage(self, key: str):
         if key in self.qimg_dict:
             self.qimg_dict.pop(key)
             self.drawing_items_info.pop(key)
+            self.drawed_pixmap = None
+            self.update()
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget):
         pixmap = self.pixmap()
@@ -182,3 +189,4 @@ class DrawingLayer(QGraphicsPixmapItem):
     def clearAllDrawings(self):
         self.qimg_dict.clear()
         self.drawing_items_info.clear()
+        self.drawed_pixmap = None

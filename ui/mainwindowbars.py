@@ -302,6 +302,27 @@ class TitleBar(Widget):
         redoAction = QAction(self.tr('Redo'), self)
         self.redo_trigger = redoAction.triggered
         redoAction.setShortcut(QKeySequence.StandardKey.Redo)
+
+        self.undoBtn = TitleBarToolBtn(self)
+        self.undoBtn.setObjectName('TitleBarUndoBtn')
+        self.undoBtn.setToolTip(self.tr('Undo') + ' (Ctrl+Z)')
+        self.undoBtn.setIcon(QIcon('icons/titlebar_undo.svg'))
+        self.undoBtn.setIconSize(QSize(20, 20))
+        self.undoBtn.setFixedSize(34, TITLEBAR_HEIGHT)
+        self.undoBtn.setAutoRaise(True)
+        self.undoBtn.clicked.connect(undoAction.trigger)
+        self.undoBtn.setEnabled(False)
+
+        self.redoBtn = TitleBarToolBtn(self)
+        self.redoBtn.setObjectName('TitleBarRedoBtn')
+        self.redoBtn.setToolTip(self.tr('Redo') + ' (Ctrl+Shift+Z / Ctrl+Y)')
+        self.redoBtn.setIcon(QIcon('icons/titlebar_redo.svg'))
+        self.redoBtn.setIconSize(QSize(20, 20))
+        self.redoBtn.setFixedSize(34, TITLEBAR_HEIGHT)
+        self.redoBtn.setAutoRaise(True)
+        self.redoBtn.clicked.connect(redoAction.trigger)
+        self.redoBtn.setEnabled(False)
+
         pageSearchAction = QAction(self.tr('Search'), self)
         self.page_search_trigger = pageSearchAction.triggered
         pageSearchAction.setShortcut(QKeySequence('Ctrl+F'))
@@ -440,6 +461,8 @@ class TitleBar(Widget):
         hlayout.addStretch()
         hlayout.addWidget(self.titleLabel)
         hlayout.addStretch()
+        hlayout.addWidget(self.undoBtn)
+        hlayout.addWidget(self.redoBtn)
         hlayout.setContentsMargins(0, 0, 0, 0)
 
         if not C.ON_MACOS:

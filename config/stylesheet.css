@@ -803,6 +803,18 @@ DrawToolCheckBox#DrawPenTool::indicator:checked {
     image: url(icons/drawingtools_pen.svg);
 }
 
+DrawToolCheckBox#DrawEraserTool::indicator {
+    image: url(icons/drawingtools_eraser.svg);
+}
+
+DrawToolCheckBox#DrawEraserTool::indicator:hover {
+    image: url(icons/drawingtools_eraser_activate.svg);
+}
+
+DrawToolCheckBox#DrawEraserTool::indicator:checked {
+    image: url(icons/drawingtools_eraser.svg);
+}
+
 DrawToolCheckBox#DrawRectTool::indicator {
     image: url(icons/bottombar_textblock_activate.svg);
 }
