@@ -531,6 +531,20 @@ QCheckBox#TextblockChecker::indicator:checked{
     image: url(icons/bottombar_textblock_activate.svg);
 }
 
+BottomBarToolBtn {
+    padding: 6px;
+    border-style: none;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+BottomBarToolBtn::hover {
+    background-color: rgba(30, 147, 229, 20%);
+}
+
+BottomBarToolBtn::pressed {
+    border: 1px solid royalblue;
+}
+
 OpenBtn {
     border-style: none;
     image: url(icons/openbtn.svg);

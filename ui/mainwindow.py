@@ -29,7 +29,7 @@ from .module_manager import ModuleManager
 from .textedit_area import SourceTextEdit, SelectTextMiniMenu, TransTextEdit
 from .drawingpanel import DrawingPanel
 from .scenetext_manager import SceneTextManager, TextPanel, PasteSrcItemsCommand
-from .mainwindowbars import TitleBar, LeftBar, BottomBar
+from .mainwindowbars import TitleBar, LeftBar, BottomBar, WorkflowSettingsPanel
 from .io_thread import ImgSaveThread, ImportDocThread, ExportDocThread
 from .custom_widget import Widget, ViewWidget
 from .global_search_widget import GlobalSearchWidget
@@ -176,6 +176,8 @@ class MainWindow(mainwindow_cls):
         self.bottomBar.textedit_checkchanged.connect(self.setTextEditMode)
         self.bottomBar.paintmode_checkchanged.connect(self.setPaintMode)
         self.bottomBar.textblock_checkchanged.connect(self.setTextBlockMode)
+        self.bottomBar.settings_clicked.connect(self.showWorkflowSettingsPanel)
+        self.workflowSettingsPanel = WorkflowSettingsPanel(self)
 
         mainHLayout = QHBoxLayout()
         mainHLayout.addWidget(self.leftBar)
@@ -192,13 +194,15 @@ class MainWindow(mainwindow_cls):
         self.canvas.canvas_undostack_changed.connect(self.updateUndoRedoButtons)
         self.canvas.run_blktrans.connect(self.on_run_blktrans)
         self.canvas.drop_open_folder.connect(self.dropOpenDir)
-        self.canvas.originallayer_trans_slider = self.bottomBar.originalSlider
-        self.canvas.textlayer_trans_slider = self.bottomBar.textlayerSlider
+        self.canvas.originallayer_trans_slider = self.workflowSettingsPanel.originalSlider
+        self.canvas.textlayer_trans_slider = self.workflowSettingsPanel.textlayerSlider
         self.canvas.copy_src_signal.connect(self.on_copy_src)
         self.canvas.paste_src_signal.connect(self.on_paste_src)
 
-        self.bottomBar.originalSlider.valueChanged.connect(self.canvas.setOriginalTransparencyBySlider)
-        self.bottomBar.textlayerSlider.valueChanged.connect(self.canvas.setTextLayerTransparencyBySlider)
+        self.workflowSettingsPanel.originalSlider.valueChanged.connect(self.canvas.setOriginalTransparencyBySlider)
+        self.workflowSettingsPanel.textlayerSlider.valueChanged.connect(self.canvas.setTextLayerTransparencyBySlider)
+        self.bottomBar.zoom_in_clicked.connect(self.canvas.scaleUp)
+        self.bottomBar.zoom_out_clicked.connect(self.canvas.scaleDown)
         
         self.drawingPanel = DrawingPanel(self.canvas, self.configPanel.inpaint_config_panel)
         self.textPanel = TextPanel(self.app)
@@ -232,6 +236,7 @@ class MainWindow(mainwindow_cls):
         self.rightComicTransStackPanel = QStackedWidget(self)
         self.rightComicTransStackPanel.addWidget(self.drawingPanel)
         self.rightComicTransStackPanel.addWidget(self.textPanel)
+        self.rightComicTransStackPanel.addWidget(self.workflowSettingsPanel)
         self.rightComicTransStackPanel.currentChanged.connect(self.on_transpanel_changed)
 
         self.comicTransSplitter = QSplitter(Qt.Orientation.Horizontal)
@@ -268,7 +273,7 @@ class MainWindow(mainwindow_cls):
             name = module_manager.textdetector.name
             pcfg.module.textdetector = name
             self.configPanel.detect_config_panel.setDetector(name)
-            self.bottomBar.textdet_selector.setSelectedValue(name)
+            self.workflowSettingsPanel.textdet_selector.setSelectedValue(name)
             LOGGER.info('Text detector set to {}'.format(name))
 
     def on_finish_setocr(self):
@@ -277,7 +282,7 @@ class MainWindow(mainwindow_cls):
             name = module_manager.ocr.name
             pcfg.module.ocr = name
             self.configPanel.ocr_config_panel.setOCR(name)
-            self.bottomBar.ocr_selector.setSelectedValue(name)
+            self.workflowSettingsPanel.ocr_selector.setSelectedValue(name)
             LOGGER.info('OCR set to {}'.format(name))
 
     def on_finish_setinpainter(self):
@@ -286,7 +291,7 @@ class MainWindow(mainwindow_cls):
             name = module_manager.inpainter.name
             pcfg.module.inpainter = name
             self.configPanel.inpaint_config_panel.setInpainter(name)
-            self.bottomBar.inpaint_selector.setSelectedValue(name)
+            self.workflowSettingsPanel.inpaint_selector.setSelectedValue(name)
             LOGGER.info('Inpainter set to {}'.format(name))
 
     def on_finish_settranslator(self):
@@ -295,7 +300,7 @@ class MainWindow(mainwindow_cls):
         if translator is not None:
             name = translator.name
             pcfg.module.translator = name
-            self.bottomBar.trans_selector.finishSetTranslator(translator)
+            self.workflowSettingsPanel.trans_selector.finishSetTranslator(translator)
             self.configPanel.trans_config_panel.finishSetTranslator(translator)
             LOGGER.info('Translator set to {}'.format(name))
         else:
@@ -304,39 +309,39 @@ class MainWindow(mainwindow_cls):
     def on_enable_module(self, idx, checked):
         if idx == 0:
             pcfg.module.enable_detect = checked
-            self.bottomBar.textdet_selector.setVisible(checked)
+            self.workflowSettingsPanel.textdet_selector.setVisible(checked)
         elif idx == 1:
             pcfg.module.enable_ocr = checked
-            self.bottomBar.ocr_selector.setVisible(checked)
+            self.workflowSettingsPanel.ocr_selector.setVisible(checked)
         elif idx == 2:
             pcfg.module.enable_translate = checked
-            self.bottomBar.trans_selector.setVisible(checked)
+            self.workflowSettingsPanel.trans_selector.setVisible(checked)
         elif idx == 3:
             pcfg.module.enable_inpaint = checked
-            self.bottomBar.inpaint_selector.setVisible(checked)
+            self.workflowSettingsPanel.inpaint_selector.setVisible(checked)
         pcfg.module.update_finish_code()
 
     def setupConfig(self):
 
-        self.bottomBar.originalSlider.setValue(int(pcfg.original_transparency * 100))
-        self.bottomBar.trans_selector.selector.addItems(GET_VALID_TRANSLATORS())
-        self.bottomBar.ocr_selector.selector.addItems(GET_VALID_OCR())
-        self.bottomBar.textdet_selector.selector.addItems(GET_VALID_TEXTDETECTORS())
-        self.bottomBar.textdet_selector.selector.currentTextChanged.connect(self.on_textdet_changed)
-        self.bottomBar.inpaint_selector.selector.addItems(GET_VALID_INPAINTERS())
-        self.bottomBar.inpaint_selector.selector.currentTextChanged.connect(self.on_inpaint_changed)
-        self.bottomBar.trans_selector.cfg_clicked.connect(self.to_trans_config)
-        self.bottomBar.trans_selector.selector.currentTextChanged.connect(self.on_trans_changed)
-        self.bottomBar.trans_selector.tgt_selector.currentTextChanged.connect(self.on_trans_tgt_changed)
-        self.bottomBar.trans_selector.src_selector.currentTextChanged.connect(self.on_trans_src_changed)
-        self.bottomBar.textdet_selector.cfg_clicked.connect(self.to_detect_config)
-        self.bottomBar.inpaint_selector.cfg_clicked.connect(self.to_inpaint_config)
-        self.bottomBar.ocr_selector.cfg_clicked.connect(self.to_ocr_config)
-        self.bottomBar.ocr_selector.selector.currentTextChanged.connect(self.on_ocr_changed)
-        self.bottomBar.textdet_selector.setVisible(pcfg.module.enable_detect)
-        self.bottomBar.ocr_selector.setVisible(pcfg.module.enable_ocr)
-        self.bottomBar.trans_selector.setVisible(pcfg.module.enable_translate)
-        self.bottomBar.inpaint_selector.setVisible(pcfg.module.enable_inpaint)
+        self.workflowSettingsPanel.originalSlider.setValue(int(pcfg.original_transparency * 100))
+        self.workflowSettingsPanel.trans_selector.selector.addItems(GET_VALID_TRANSLATORS())
+        self.workflowSettingsPanel.ocr_selector.selector.addItems(GET_VALID_OCR())
+        self.workflowSettingsPanel.textdet_selector.selector.addItems(GET_VALID_TEXTDETECTORS())
+        self.workflowSettingsPanel.textdet_selector.selector.currentTextChanged.connect(self.on_textdet_changed)
+        self.workflowSettingsPanel.inpaint_selector.selector.addItems(GET_VALID_INPAINTERS())
+        self.workflowSettingsPanel.inpaint_selector.selector.currentTextChanged.connect(self.on_inpaint_changed)
+        self.workflowSettingsPanel.trans_selector.cfg_clicked.connect(self.to_trans_config)
+        self.workflowSettingsPanel.trans_selector.selector.currentTextChanged.connect(self.on_trans_changed)
+        self.workflowSettingsPanel.trans_selector.tgt_selector.currentTextChanged.connect(self.on_trans_tgt_changed)
+        self.workflowSettingsPanel.trans_selector.src_selector.currentTextChanged.connect(self.on_trans_src_changed)
+        self.workflowSettingsPanel.textdet_selector.cfg_clicked.connect(self.to_detect_config)
+        self.workflowSettingsPanel.inpaint_selector.cfg_clicked.connect(self.to_inpaint_config)
+        self.workflowSettingsPanel.ocr_selector.cfg_clicked.connect(self.to_ocr_config)
+        self.workflowSettingsPanel.ocr_selector.selector.currentTextChanged.connect(self.on_ocr_changed)
+        self.workflowSettingsPanel.textdet_selector.setVisible(pcfg.module.enable_detect)
+        self.workflowSettingsPanel.ocr_selector.setVisible(pcfg.module.enable_ocr)
+        self.workflowSettingsPanel.trans_selector.setVisible(pcfg.module.enable_translate)
+        self.workflowSettingsPanel.inpaint_selector.setVisible(pcfg.module.enable_inpaint)
 
         self.configPanel.trans_config_panel.target_combobox.currentTextChanged.connect(self.on_trans_tgt_changed)
         self.configPanel.trans_config_panel.source_combobox.currentTextChanged.connect(self.on_trans_src_changed)
@@ -447,6 +452,13 @@ class MainWindow(mainwindow_cls):
 
     def setupConfigUI(self):
         self.centralStackWidget.setCurrentIndex(1)
+
+    def showWorkflowSettingsPanel(self):
+        self.leftBar.imgTransChecker.setChecked(True)
+        self.setupImgTransUI()
+        if self.rightComicTransStackPanel.isHidden():
+            self.rightComicTransStackPanel.show()
+        self.rightComicTransStackPanel.setCurrentWidget(self.workflowSettingsPanel)
 
     def set_display_lang(self, lang: str):
         self.retranslateUI()
@@ -718,6 +730,7 @@ class MainWindow(mainwindow_cls):
         self.page_changing = False
 
     def setupShortcuts(self):
+        self._zoom_shortcuts = []
         self.titleBar.nextpage_trigger.connect(self.shortcutNext) 
         self.titleBar.prevpage_trigger.connect(self.shortcutBefore)
         self.titleBar.textedit_trigger.connect(self.shortcutTextedit)
@@ -756,10 +769,8 @@ class MainWindow(mainwindow_cls):
         shortcutRedo.activated.connect(self.on_redo)
         shortcutRedoAlt = QShortcut(QKeySequence("Ctrl+Y"), self)
         shortcutRedoAlt.activated.connect(self.on_redo)
-        shortcutZoomIn = QShortcut(QKeySequence.StandardKey.ZoomIn, self)
-        shortcutZoomIn.activated.connect(self.canvas.gv.scale_up_signal)
-        shortcutZoomOut = QShortcut(QKeySequence.StandardKey.ZoomOut, self)
-        shortcutZoomOut.activated.connect(self.canvas.gv.scale_down_signal)
+        self.registerZoomShortcuts(['Ctrl++', 'Ctrl+=', 'Ctrl+Shift+='], self.canvas.scaleUp)
+        self.registerZoomShortcuts(['Ctrl+-', 'Ctrl+_'], self.canvas.scaleDown)
         shortcutCtrlD = QShortcut(QKeySequence("Ctrl+D"), self)
         shortcutCtrlD.activated.connect(self.shortcutCtrlD)
         shortcutSpace = QShortcut(QKeySequence("Space"), self)
@@ -789,6 +800,20 @@ class MainWindow(mainwindow_cls):
             shortcut = QShortcut(QKeySequence(shortcut_key), self)
             shortcut.activated.connect(partial(self.drawingPanel.shortcutSetCurrentToolByName, tool_name))
             self.drawingPanel.setShortcutTip(tool_name, shortcut_key)
+
+    def registerZoomShortcuts(self, sequences: List[str], slot):
+        registered = {shortcut.key().toString() for shortcut in self._zoom_shortcuts}
+        for sequence in sequences:
+            key_sequence = QKeySequence(sequence)
+            key_string = key_sequence.toString()
+            if key_string in registered:
+                continue
+            shortcut = QShortcut(key_sequence, self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(slot)
+            shortcut.activatedAmbiguously.connect(slot)
+            self._zoom_shortcuts.append(shortcut)
+            registered.add(key_string)
 
     def shortcutNext(self):
         sender: QShortcut = self.sender()
@@ -1183,8 +1208,8 @@ class MainWindow(mainwindow_cls):
                 self.rightComicTransStackPanel.show()
             self.rightComicTransStackPanel.setCurrentIndex(0)
             self.canvas.setPaintMode(True)
-            self.bottomBar.originalSlider.show()
-            self.bottomBar.textlayerSlider.show()
+            self.workflowSettingsPanel.originalSlider.show()
+            self.workflowSettingsPanel.textlayerSlider.show()
             self.bottomBar.textblockChecker.hide()
             self.canvas.setTextBlockMode(False)
             self.st_manager.showTextblkItemRect(False)
@@ -1321,19 +1346,19 @@ class MainWindow(mainwindow_cls):
         self.configPanel.focusOnDetect()
 
     def on_textdet_changed(self):
-        module = self.bottomBar.textdet_selector.selector.currentText()
+        module = self.workflowSettingsPanel.textdet_selector.selector.currentText()
         tgt_selector = self.configPanel.detect_config_panel.module_combobox
         if tgt_selector.currentText() != module and module in GET_VALID_TEXTDETECTORS():
             tgt_selector.setCurrentText(module)
 
     def on_ocr_changed(self):
-        module = self.bottomBar.ocr_selector.selector.currentText()
+        module = self.workflowSettingsPanel.ocr_selector.selector.currentText()
         tgt_selector = self.configPanel.ocr_config_panel.module_combobox
         if tgt_selector.currentText() != module and module in GET_VALID_OCR():
             tgt_selector.setCurrentText(module)
 
     def on_trans_changed(self):
-        module = self.bottomBar.trans_selector.selector.currentText()
+        module = self.workflowSettingsPanel.trans_selector.selector.currentText()
         tgt_selector = self.configPanel.trans_config_panel.module_combobox
         if tgt_selector.currentText() != module and module in GET_VALID_TRANSLATORS():
             tgt_selector.setCurrentText(module)
@@ -1350,7 +1375,7 @@ class MainWindow(mainwindow_cls):
             combobox.blockSignals(True)
             combobox.setCurrentText(text)
             combobox.blockSignals(False)
-        combobox = self.bottomBar.trans_selector.src_selector
+        combobox = self.workflowSettingsPanel.trans_selector.src_selector
         if sender != combobox:
             combobox.blockSignals(True)
             combobox.setCurrentText(text)
@@ -1368,14 +1393,14 @@ class MainWindow(mainwindow_cls):
             combobox.blockSignals(True)
             combobox.setCurrentText(text)
             combobox.blockSignals(False)
-        combobox = self.bottomBar.trans_selector.tgt_selector
+        combobox = self.workflowSettingsPanel.trans_selector.tgt_selector
         if sender != combobox:
             combobox.blockSignals(True)
             combobox.setCurrentText(text)
             combobox.blockSignals(False)
 
     def on_inpaint_changed(self):
-        module = self.bottomBar.inpaint_selector.selector.currentText()
+        module = self.workflowSettingsPanel.inpaint_selector.selector.currentText()
         tgt_selector = self.configPanel.inpaint_config_panel.module_combobox
         if tgt_selector.currentText() != module and module in GET_VALID_INPAINTERS():
             tgt_selector.setCurrentText(module)
@@ -1695,7 +1720,9 @@ class MainWindow(mainwindow_cls):
         self.module_manager.runImgtransPipeline(pages_to_process if (pages_to_process or continue_mode) else None)
 
     def on_transpanel_changed(self):
-        self.canvas.editor_index = self.rightComicTransStackPanel.currentIndex()
+        panel_index = self.rightComicTransStackPanel.currentIndex()
+        if panel_index in (0, 1):
+            self.canvas.editor_index = panel_index
         if not self.canvas.textEditMode() and self.canvas.search_widget.isVisible():
             self.canvas.search_widget.hide()
         self.canvas.updateLayers()

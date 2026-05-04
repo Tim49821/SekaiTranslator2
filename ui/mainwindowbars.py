@@ -32,6 +32,10 @@ class TitleBarToolBtn(QToolButton):
     pass
 
 
+class BottomBarToolBtn(QToolButton):
+    pass
+
+
 class PersistentCheckMenu(QMenu):
     def mouseReleaseEvent(self, event):
         action = self.actionAt(event.pos())
@@ -638,7 +642,7 @@ class TranslatorSelectionWidget(Widget):
 
     def __init__(self) -> None:
         super().__init__()
-        label = ConfigClickableLabel(text=self.tr('Translate'))
+        label = ConfigClickableLabel(text=self.tr('Translator'))
         label.clicked.connect(self.cfg_clicked)
         label_src = ConfigClickableLabel(text=self.tr('Source'))
         label_src.clicked.connect(self.cfg_clicked)
@@ -651,16 +655,26 @@ class TranslatorSelectionWidget(Widget):
         self.cfg_btn = SmallConfigPutton()
         self.cfg_btn.clicked.connect(self.cfg_clicked)
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addLayout(self._selectionLayout(label, self.selector, self.cfg_btn))
+        layout.addLayout(self._selectionLayout(label_src, self.src_selector))
+        layout.addLayout(self._selectionLayout(label_tgt, self.tgt_selector))
+
+    def _selectionLayout(self, label: ConfigClickableLabel, selector: SmallComboBox, cfg_btn: SmallConfigPutton = None):
+        label.setFixedWidth(92)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
         layout.addWidget(label)
-        layout.addWidget(self.selector)
-        layout.addWidget(label_src)
-        layout.addWidget(self.src_selector)
-        layout.addWidget(label_tgt)
-        layout.addWidget(self.tgt_selector)
-        layout.addWidget(self.cfg_btn)
-        layout.setSpacing(1)
+        layout.addWidget(selector)
+        if cfg_btn is not None:
+            layout.addWidget(cfg_btn)
+        else:
+            layout.addSpacing(18)
+        layout.addStretch()
+        return layout
 
     def enterEvent(self, event: QEvent) -> None:
         if self.cfg_btn is not None:
@@ -690,12 +704,63 @@ class TranslatorSelectionWidget(Widget):
         self.blockSignals(False)
 
 
+class WorkflowSettingsPanel(Widget):
+
+    def __init__(self, mainwindow: QMainWindow, *args, **kwargs) -> None:
+        super().__init__(mainwindow, *args, **kwargs)
+        self.mainwindow = mainwindow
+
+        self.textdet_selector = SelectionWithConfigWidget(self.tr('Text Detector'))
+        self.ocr_selector = SelectionWithConfigWidget(self.tr('OCR'))
+        self.inpaint_selector = SelectionWithConfigWidget(self.tr('Inpaint'))
+        self.trans_selector = TranslatorSelectionWidget()
+
+        self.originalSlider = PaintQSlider(self.tr("Original image opacity"), Qt.Orientation.Horizontal, self)
+        self.originalSlider.setFixedWidth(220)
+        self.originalSlider.setRange(0, 100)
+
+        self.textlayerSlider = PaintQSlider(self.tr("Text layer opacity"), Qt.Orientation.Horizontal, self)
+        self.textlayerSlider.setFixedWidth(220)
+        self.textlayerSlider.setValue(100)
+        self.textlayerSlider.setRange(0, 100)
+
+        self.workflowLabel = QLabel(self.tr('Workflow'))
+        self.opacityLabel = QLabel(self.tr('Layer Opacity'))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self.workflowLabel)
+        layout.addWidget(self.textdet_selector)
+        layout.addWidget(self.ocr_selector)
+        layout.addWidget(self.inpaint_selector)
+        layout.addWidget(self.trans_selector)
+        layout.addSpacing(8)
+        layout.addWidget(self.opacityLabel)
+        layout.addLayout(self._sliderLayout(self.tr('Text'), self.textlayerSlider))
+        layout.addLayout(self._sliderLayout(self.tr('Original'), self.originalSlider))
+        layout.addStretch()
+
+    def _sliderLayout(self, label_text: str, slider: PaintQSlider):
+        layout = QHBoxLayout()
+        label = QLabel(label_text)
+        label.setFixedWidth(70)
+        layout.addWidget(label)
+        layout.addWidget(slider)
+        layout.addStretch()
+        return layout
+
+
 
 class BottomBar(Widget):
     
     textedit_checkchanged = Signal()
     paintmode_checkchanged = Signal()
     textblock_checkchanged = Signal()
+    zoom_in_clicked = Signal()
+    zoom_out_clicked = Signal()
+    settings_clicked = Signal()
 
     def __init__(self, mainwindow: QMainWindow, *args, **kwargs) -> None:
         super().__init__(mainwindow, *args, **kwargs)
@@ -703,11 +768,6 @@ class BottomBar(Widget):
         self.setMouseTracking(True)
         self.mainwindow = mainwindow
         
-        self.textdet_selector = SelectionWithConfigWidget(self.tr('Text Detector'))
-        self.ocr_selector = SelectionWithConfigWidget(self.tr('OCR'))
-        self.inpaint_selector = SelectionWithConfigWidget(self.tr('Inpaint'))
-        self.trans_selector = TranslatorSelectionWidget()
-
         self.hlayout = QHBoxLayout(self)
         self.paintChecker = QCheckBox()
         self.paintChecker.setObjectName('PaintChecker')
@@ -720,26 +780,41 @@ class BottomBar(Widget):
         self.textblockChecker = QCheckBox()
         self.textblockChecker.setObjectName('TextblockChecker')
         self.textblockChecker.clicked.connect(self.onTextblockCheckerClicked)
-        
-        self.originalSlider = PaintQSlider(self.tr("Original image opacity"), Qt.Orientation.Horizontal, self)
-        self.originalSlider.setFixedWidth(150)
-        self.originalSlider.setRange(0, 100)
 
-        self.textlayerSlider = PaintQSlider(self.tr("Text layer opacity"), Qt.Orientation.Horizontal, self)
-        self.textlayerSlider.setFixedWidth(150)
-        self.textlayerSlider.setValue(100)
-        self.textlayerSlider.setRange(0, 100)
+        self.settingsBtn = BottomBarToolBtn()
+        self.settingsBtn.setObjectName('WorkflowSettingsBtn')
+        self.settingsBtn.setToolTip(self.tr('Workflow settings'))
+        self.settingsBtn.setIcon(QIcon('icons/workflow_settings.svg'))
+        self.settingsBtn.setIconSize(QSize(20, 20))
+        self.settingsBtn.setFixedSize(34, 34)
+        self.settingsBtn.setAutoRaise(True)
+        self.settingsBtn.clicked.connect(lambda _checked=False: self.settings_clicked.emit())
+
+        self.zoomOutBtn = BottomBarToolBtn()
+        self.zoomOutBtn.setObjectName('ZoomOutBtn')
+        self.zoomOutBtn.setToolTip(self.tr('Zoom out') + ' (Ctrl+-)')
+        self.zoomOutBtn.setIcon(QIcon('icons/zoom-out.svg'))
+        self.zoomOutBtn.setIconSize(QSize(20, 20))
+        self.zoomOutBtn.setFixedSize(34, 34)
+        self.zoomOutBtn.setAutoRaise(True)
+        self.zoomOutBtn.clicked.connect(lambda _checked=False: self.zoom_out_clicked.emit())
+
+        self.zoomInBtn = BottomBarToolBtn()
+        self.zoomInBtn.setObjectName('ZoomInBtn')
+        self.zoomInBtn.setToolTip(self.tr('Zoom in') + ' (Ctrl++ / Ctrl+=)')
+        self.zoomInBtn.setIcon(QIcon('icons/zoom-in.svg'))
+        self.zoomInBtn.setIconSize(QSize(20, 20))
+        self.zoomInBtn.setFixedSize(34, 34)
+        self.zoomInBtn.setAutoRaise(True)
+        self.zoomInBtn.clicked.connect(lambda _checked=False: self.zoom_in_clicked.emit())
         
-        self.hlayout.addWidget(self.textdet_selector)
-        self.hlayout.addWidget(self.ocr_selector)
-        self.hlayout.addWidget(self.inpaint_selector)
-        self.hlayout.addWidget(self.trans_selector)
         # self.hlayout.addWidget(self.translatorStatusbtn)
         # self.hlayout.addWidget(self.transTranspageBtn)
         # self.hlayout.addWidget(self.inpainterStatBtn)
         self.hlayout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
-        self.hlayout.addWidget(self.textlayerSlider)
-        self.hlayout.addWidget(self.originalSlider)
+        self.hlayout.addWidget(self.zoomOutBtn)
+        self.hlayout.addWidget(self.zoomInBtn)
+        self.hlayout.addWidget(self.settingsBtn)
         self.hlayout.addWidget(self.paintChecker)
         self.hlayout.addWidget(self.texteditChecker)
         self.hlayout.addWidget(self.textblockChecker)

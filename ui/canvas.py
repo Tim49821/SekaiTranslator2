@@ -101,6 +101,16 @@ class CustomGV(QGraphicsView):
             self.ctrl_pressed = True
 
         modifiers = e.modifiers()
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if key in {QKEY.Key_Plus, QKEY.Key_Equal}:
+                self.scale_up_signal.emit()
+                e.accept()
+                return
+            if key in {QKEY.Key_Minus, QKEY.Key_Underscore}:
+                self.scale_down_signal.emit()
+                e.accept()
+                return
+
         if modifiers == Qt.KeyboardModifier.ControlModifier:
             if key == QKEY.Key_V:
                 # self.ctrlv_pressed.emit(e)
