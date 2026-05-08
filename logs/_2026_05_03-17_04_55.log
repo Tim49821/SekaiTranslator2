@@ -1,6 +1,0 @@
-[INFO] launch:main:258 - set display language to ko_KR
-[INFO] mainwindow:on_finish_settranslator:302 - Translator set to LLM Google
-[INFO] mainwindow:on_finish_setdetector:274 - Text detector set to ctd
-[INFO] mainwindow:on_finish_setinpainter:292 - Inpainter set to lama_large_512px
-[INFO] mainwindow:on_finish_setocr:283 - OCR set to PaddleOCRVLManga
-[INFO] config:save_config:339 - Config saved

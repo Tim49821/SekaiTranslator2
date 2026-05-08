@@ -1,4 +1,6 @@
 .DS_Store
+.venv/
+logs/
 __pycache__/
 */__pycache__/
 *.pyc

@@ -2,8 +2,16 @@ import numpy as np
 from typing import List
 import os
 import logging
+import importlib.util
 
 LOGGER = logging.getLogger("BallonTranslator")
+
+# Specify the path for storing PaddleOCR models before importing PaddleOCR.
+PADDLE_OCR_PATH = os.path.join("data", "models", "paddle-ocr")
+os.environ["PPOCR_HOME"] = PADDLE_OCR_PATH
+os.environ["PADDLEOCR_HOME"] = PADDLE_OCR_PATH
+os.environ["PADDLE_PDX_CACHE_HOME"] = PADDLE_OCR_PATH
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 try:
     from paddleocr import PaddleOCR
@@ -15,17 +23,18 @@ except ImportError:
         "PaddleOCR is not installed, so the module will not be initialized. \nCheck this issue https://github.com/dmMaze/BallonsTranslator/issues/835#issuecomment-2772940806"
     )
 
+PADDLE_RUNTIME_AVAILABLE = importlib.util.find_spec("paddle") is not None
+PADDLE_RUNTIME_INSTALL_HINT = (
+    "PaddleOCR requires the PaddlePaddle runtime for inference, but the "
+    "'paddlepaddle' package is not installed. Install it with "
+    "'python -m pip install paddlepaddle>=3.3.0,<4.0.0'. CUDA users can "
+    "install the matching 'paddlepaddle-gpu' package instead."
+)
+
 import cv2
 import re
 
 from .base import OCRBase, register_OCR, DEFAULT_DEVICE, DEVICE_SELECTOR, TextBlock
-
-# Specify the path for storing PaddleOCR models
-PADDLE_OCR_PATH = os.path.join("data", "models", "paddle-ocr")
-# Set an environment variable to store PaddleOCR models
-os.environ["PPOCR_HOME"] = PADDLE_OCR_PATH
-os.environ["PADDLEOCR_HOME"] = PADDLE_OCR_PATH
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 if PADDLE_OCR_AVAILABLE:
 
@@ -127,8 +136,8 @@ if PADDLE_OCR_AVAILABLE:
             },
             "ocr_version": {
                 "type": "selector",
-                "options": ["PP-OCRv4", "PP-OCRv3", "PP-OCRv2", "PP-OCR"],
-                "value": "PP-OCRv4",
+                "options": ["PP-OCRv5", "PP-OCRv4", "PP-OCRv3"],
+                "value": "PP-OCRv5",
                 "description": "Select the OCR model version",
             },
             "enable_mkldnn": {
@@ -191,7 +200,6 @@ if PADDLE_OCR_AVAILABLE:
                 logging.getLogger("predict_system").setLevel(logging.WARNING)
 
         def _build_new_init_kwargs(self, lang_code: str, use_gpu: bool):
-            model_root = os.path.join(PADDLE_OCR_PATH, lang_code, self.ocr_version)
             kwargs = {
                 "lang": lang_code,
                 "ocr_version": self.ocr_version,
@@ -203,13 +211,8 @@ if PADDLE_OCR_AVAILABLE:
                 "text_recognition_batch_size": self.rec_batch_num,
                 "text_rec_score_thresh": self.drop_score,
                 "enable_mkldnn": self.enable_mkldnn,
-                "text_detection_model_dir": os.path.join(model_root, "det"),
-                "text_recognition_model_dir": os.path.join(model_root, "rec"),
             }
             if self.use_angle_cls:
-                kwargs["textline_orientation_model_dir"] = os.path.join(
-                    model_root, "cls"
-                )
                 kwargs["textline_orientation_batch_size"] = 1
             return kwargs
 
@@ -302,6 +305,9 @@ if PADDLE_OCR_AVAILABLE:
             return []
 
         def _load_model(self):
+            if not PADDLE_RUNTIME_AVAILABLE:
+                raise RuntimeError(PADDLE_RUNTIME_INSTALL_HINT)
+
             lang_code = self.lang_map[self.language]
             use_gpu = True if self.device == "cuda" else False
             if self.debug_mode:
