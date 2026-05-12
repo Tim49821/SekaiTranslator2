@@ -105,7 +105,7 @@ class LLM_API_Translator(BaseTranslator):
             "value": 0.1,
             "description": "Sampling temperature. Lower values are recommended for structured output.",
         },
-        "top p": {
+        "top_p": {
             "value": 1.0,
             "description": "Top P for sampling.",
         },
@@ -251,6 +251,8 @@ class LLM_API_Translator(BaseTranslator):
 
     @property
     def top_p(self) -> float:
+        if self.params is not None and "top_p" in self.params:
+            return float(self.get_param_value("top_p"))
         return float(self.get_param_value("top p"))
 
     @property

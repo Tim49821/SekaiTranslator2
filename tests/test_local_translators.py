@@ -358,8 +358,8 @@ class GemmaTranslatorTest(unittest.TestCase):
                     "max new tokens": 64,
                     "context tokens": 512,
                     "gpu layers": -1,
-                    "top p": 0.8,
-                    "top k": 32,
+                    "top_p": 0.8,
+                    "top_k": 32,
                 },
             )
             result = translator.translate(["line one", ""])
@@ -378,6 +378,27 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(payload["structure_retry_count"], 1)
         self.assertEqual(payload["chunk_context_cells"], 2)
         self.assertIn("자연스러운 한국어", payload["style_guide"])
+
+    def test_legacy_top_sampling_names_are_migrated(self):
+        stdout = '{"translations":["one"]}'
+        with patch("modules.translators.trans_gemma4.osp.isfile", return_value=True), \
+             patch("modules.translators.trans_gemma4.subprocess.run", return_value=FakeCompletedProcess(stdout=stdout)) as run_mock:
+            translator = Gemma4E4BTranslator(
+                "日本語",
+                "한국어",
+                **{
+                    "worker python": "/fake/python",
+                    "device": "cpu",
+                    "top p": 0.75,
+                    "top k": 24,
+                },
+            )
+            result = translator.translate(["line one"])
+
+        self.assertEqual(result, ["one"])
+        payload = json.loads(run_mock.call_args.kwargs["input"])
+        self.assertEqual(payload["top_p"], 0.75)
+        self.assertEqual(payload["top_k"], 24)
 
     def test_q6_quantization_uses_upstream_q6_file(self):
         stdout = '{"translations":["one"]}'

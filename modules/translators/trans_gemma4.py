@@ -114,11 +114,15 @@ class LocalGGUFTranslator(BaseTranslator):
 
     @property
     def top_p(self) -> float:
-        return float(self.get_param_value("top_p"))
+        if self.params is not None and "top_p" in self.params:
+            return float(self.get_param_value("top_p"))
+        return float(self.get_param_value("top p"))
 
     @property
     def top_k(self) -> int:
-        return int(self.get_param_value("top_k"))
+        if self.params is not None and "top_k" in self.params:
+            return int(self.get_param_value("top_k"))
+        return int(self.get_param_value("top k"))
 
     @property
     def worker_timeout(self) -> int:
@@ -328,11 +332,11 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
             "value": 0.15,
             "description": "Sampling temperature. A small value can improve natural dialogue while staying stable.",
         },
-        "top p": {
+        "top_p": {
             "value": 1.0,
             "description": "Nucleus sampling top_p. Lower values narrow token choices; 1.0 disables nucleus filtering.",
         },
-        "top k": {
+        "top_k": {
             "value": 40,
             "description": "Top-k sampling limit. 0 disables top-k filtering in llama.cpp.",
         },
@@ -429,11 +433,11 @@ class Qwen35NineBGGUFTranslator(LocalGGUFTranslator):
             "value": 0.0,
             "description": "Sampling temperature. 0 keeps translation deterministic.",
         },
-        "top p": {
+        "top_p": {
             "value": 1.0,
             "description": "Nucleus sampling top_p. Lower values narrow token choices; 1.0 disables nucleus filtering.",
         },
-        "top k": {
+        "top_k": {
             "value": 40,
             "description": "Top-k sampling limit. 0 disables top-k filtering in llama.cpp.",
         },

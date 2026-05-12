@@ -13,6 +13,10 @@ from utils.lock import aquire_model_loading_lock, release_model_loading_lock
 
 
 GPUINTENSIVE_SET = {'cuda', 'mps', 'xpu', 'privateuseone'}
+PARAM_RENAME_ALIASES = {
+    'top p': 'top_p',
+    'top k': 'top_k',
+}
 
 def register_hooks(hooks_registered: OrderedDict, callbacks: Union[List, Callable, Dict]):
     if callbacks is None:
@@ -37,6 +41,12 @@ def register_hooks(hooks_registered: OrderedDict, callbacks: Union[List, Callabl
 
 def patch_module_params(cfg_param, module_params, module_name: str = ''):
     # cfg_param = config_params[module_key]
+    for old_key, new_key in PARAM_RENAME_ALIASES.items():
+        if old_key in cfg_param and old_key not in module_params and new_key in module_params:
+            if new_key not in cfg_param:
+                cfg_param[new_key] = cfg_param[old_key]
+            cfg_param.pop(old_key)
+
     cfg_key_set = set(cfg_param.keys())
     module_key_set = set(module_params.keys())
     for ck in cfg_key_set:
