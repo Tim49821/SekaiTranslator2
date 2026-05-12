@@ -7,7 +7,7 @@ from .custom_widget import ConfigComboBox, ParamComboBox, NoBorderPushBtn, Param
 from utils.shared import CONFIG_COMBOBOX_LONG, size2width, CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_HEIGHT
 from utils.config import pcfg
 
-from qtpy.QtWidgets import QPlainTextEdit, QHBoxLayout, QVBoxLayout, QWidget, QLabel, QCheckBox, QLineEdit, QGridLayout, QPushButton
+from qtpy.QtWidgets import QPlainTextEdit, QHBoxLayout, QVBoxLayout, QWidget, QLabel, QCheckBox, QLineEdit, QGridLayout, QPushButton, QInputDialog
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QDoubleValidator
 
@@ -130,6 +130,130 @@ class ParamPushButton(QPushButton):
         self.paramwidget_edited.emit(self.param_key, '')
 
 
+class ParamStyleGuideManager(QWidget):
+    paramwidget_edited = Signal(str, object)
+
+    def __init__(self, param_key: str, param_dict: dict, all_params: dict, scrollWidget: QWidget = None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.param_key = param_key
+        self.param_dict = param_dict
+        self.all_params = all_params
+        self._syncing = False
+
+        value = param_dict.get('value', {})
+        self.styles = dict(value.get('styles', {}))
+        default_style = self._current_style_guide()
+        if default_style:
+            self.styles['Default'] = default_style
+        elif 'Default' not in self.styles:
+            self.styles['Default'] = ''
+        self.selected = value.get('selected') or 'Default'
+        if self.selected not in self.styles:
+            self.selected = 'Default'
+
+        self.selector = ParamComboBox(param_key, list(self.styles.keys()), size=CONFIG_COMBOBOX_LONG, scrollWidget=scrollWidget)
+        self.selector.setCurrentText(self.selected)
+        self.editor = ParamEditor('style guide')
+        self.editor.setText(self.styles.get(self.selected, default_style))
+
+        self.add_btn = QPushButton(self.tr('Add style'))
+        self.replace_btn = QPushButton(self.tr('Replace style'))
+        self.delete_btn = QPushButton(self.tr('Delete style'))
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        btn_layout.addWidget(self.add_btn)
+        btn_layout.addWidget(self.replace_btn)
+        btn_layout.addWidget(self.delete_btn)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.selector)
+        layout.addWidget(self.editor)
+        layout.addLayout(btn_layout)
+
+        self.selector.currentTextChanged.connect(self.on_selected_style_changed)
+        self.editor.textChanged.connect(self.on_editor_changed)
+        self.add_btn.clicked.connect(self.on_add_style)
+        self.replace_btn.clicked.connect(self.on_replace_style)
+        self.delete_btn.clicked.connect(self.on_delete_style)
+        self._emit_state()
+        self._emit_active_style()
+
+    def _current_style_guide(self) -> str:
+        style_param = self.all_params.get('style guide', '')
+        if isinstance(style_param, dict):
+            return str(style_param.get('value', ''))
+        return str(style_param)
+
+    def _set_selector_items(self):
+        self._syncing = True
+        current = self.selected
+        self.selector.clear()
+        self.selector.addItems(list(self.styles.keys()))
+        self.selector.setCurrentText(current)
+        self._syncing = False
+
+    def _state(self) -> dict:
+        return {
+            'selected': self.selected,
+            'styles': dict(self.styles),
+        }
+
+    def _emit_state(self):
+        self.paramwidget_edited.emit(self.param_key, self._state())
+
+    def _emit_active_style(self):
+        style_text = self.editor.text()
+        if isinstance(self.all_params.get('style guide'), dict):
+            self.all_params['style guide']['value'] = style_text
+        self.paramwidget_edited.emit('style guide', style_text)
+
+    def on_selected_style_changed(self, style_name: str):
+        if self._syncing or style_name not in self.styles:
+            return
+        self.selected = style_name
+        self._syncing = True
+        self.editor.setText(self.styles[style_name])
+        self._syncing = False
+        self._emit_state()
+        self._emit_active_style()
+
+    def on_editor_changed(self):
+        if self._syncing:
+            return
+        self.styles[self.selected] = self.editor.text()
+        self._emit_state()
+        self._emit_active_style()
+
+    def on_add_style(self):
+        name, ok = QInputDialog.getText(self, self.tr('Add style guide'), self.tr('Style name:'))
+        name = name.strip()
+        if not ok or not name:
+            return
+        self.selected = name
+        self.styles[name] = self.editor.text()
+        self._set_selector_items()
+        self._emit_state()
+
+    def on_replace_style(self):
+        self.styles[self.selected] = self.editor.text()
+        self._emit_state()
+        self._emit_active_style()
+
+    def on_delete_style(self):
+        if self.selected == 'Default' or len(self.styles) <= 1:
+            return
+        self.styles.pop(self.selected, None)
+        self.selected = 'Default' if 'Default' in self.styles else next(iter(self.styles))
+        self._set_selector_items()
+        self._syncing = True
+        self.editor.setText(self.styles[self.selected])
+        self._syncing = False
+        self._emit_state()
+        self._emit_active_style()
+
+
 class ParamWidget(QWidget):
 
     paramwidget_edited = Signal(str, dict)
@@ -148,6 +272,8 @@ class ParamWidget(QWidget):
 
         for ii, param_key in enumerate(params):
             if param_key == 'description' or param_key.startswith('__'):
+                continue
+            if isinstance(params[param_key], dict) and params[param_key].get('hidden', False):
                 continue
             display_param_name = param_key
 
@@ -212,6 +338,9 @@ class ParamWidget(QWidget):
                 elif param_type == 'pushbtn':
                     param_widget = ParamPushButton(param_key, param_dict)
                     require_label = False
+
+                elif param_type == 'style_guide_manager':
+                    param_widget = ParamStyleGuideManager(param_key, param_dict, params, scrollWidget=scrollWidget)
 
                 elif param_type == 'line_editor':
                     param_widget = ParamLineEditor(param_key, force_digital=is_digital)

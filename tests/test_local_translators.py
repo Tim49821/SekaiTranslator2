@@ -358,6 +358,8 @@ class GemmaTranslatorTest(unittest.TestCase):
                     "max new tokens": 64,
                     "context tokens": 512,
                     "gpu layers": -1,
+                    "top p": 0.8,
+                    "top k": 32,
                 },
             )
             result = translator.translate(["line one", ""])
@@ -371,6 +373,8 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(payload["model_quantization"], "Q4_K_M")
         self.assertEqual(payload["gpu_layers"], 0)
         self.assertEqual(payload["context_tokens"], 512)
+        self.assertEqual(payload["top_p"], 0.8)
+        self.assertEqual(payload["top_k"], 32)
         self.assertEqual(payload["structure_retry_count"], 1)
         self.assertEqual(payload["chunk_context_cells"], 2)
         self.assertIn("자연스러운 한국어", payload["style_guide"])
@@ -456,6 +460,8 @@ class GemmaTranslatorTest(unittest.TestCase):
             "gpu_layers": 0,
             "threads": 0,
             "temperature": 0.15,
+            "top_p": 0.8,
+            "top_k": 32,
             "thinking_mode": True,
             "structure_retry_count": 1,
             "chunk_context_cells": 2,
@@ -468,6 +474,8 @@ class GemmaTranslatorTest(unittest.TestCase):
 
         self.assertEqual(result, ["translation-1", "", "translation-2", "translation-3"])
         self.assertEqual(len(FakeLlama.completion_calls), 1)
+        self.assertEqual(FakeLlama.completion_calls[0]["top_p"], 0.8)
+        self.assertEqual(FakeLlama.completion_calls[0]["top_k"], 32)
         page_prompt = FakeLlama.completion_calls[0]["messages"][1]["content"]
         system_prompt = FakeLlama.completion_calls[0]["messages"][0]["content"]
 

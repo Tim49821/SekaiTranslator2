@@ -353,6 +353,8 @@ def _create_completion(
         "messages": messages,
         "max_tokens": _payload_int(payload, "max_new_tokens", 2048),
         "temperature": max(0.0, temperature),
+        "top_p": min(1.0, max(0.0, _payload_float(payload, "top_p", 1.0))),
+        "top_k": max(0, _payload_int(payload, "top_k", 40)),
     }
 
     try:

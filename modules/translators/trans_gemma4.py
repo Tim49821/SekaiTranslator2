@@ -34,6 +34,24 @@ GEMMA_KOREAN_STYLE_GUIDE = (
     "leave iconic sounds short when a Korean equivalent would feel forced. Correct only obvious OCR noise, "
     "especially broken punctuation, duplicated characters, or vertical text that was read in the wrong order."
 )
+GEMMA_STYLE_GUIDE_PRESETS = {
+    "Default": GEMMA_KOREAN_STYLE_GUIDE,
+    "Literal but Natural": (
+        "For Japanese-to-Korean manga translation, keep the original meaning and sentence beats close to the source, "
+        "but write readable Korean. Preserve repeated terms, honorifics, character-specific 말투, and important ambiguity. "
+        "Avoid adding interpretation that is not present in the source. Keep speech-bubble wording compact."
+    ),
+    "Casual Webtoon Korean": (
+        "For Japanese-to-Korean manga translation, write lively modern Korean dialogue that feels natural in a webtoon. "
+        "Favor concise 반말/존댓말 choices, idiomatic reactions, and emotional readability over literal Japanese word order. "
+        "Keep recurring terms consistent and avoid making character voices too similar."
+    ),
+    "Formal Polished Korean": (
+        "For Japanese-to-Korean manga translation, write polished Korean with clean sentence flow and restrained slang. "
+        "Preserve speech level, honorifics, characterization, and emotional nuance. Keep dialogue compact enough for speech bubbles "
+        "and avoid overly casual phrasing unless the character voice clearly calls for it."
+    ),
+}
 
 
 GEMMA_LANG_MAP = {
@@ -93,6 +111,14 @@ class LocalGGUFTranslator(BaseTranslator):
     @property
     def temperature(self) -> float:
         return float(self.get_param_value("temperature"))
+
+    @property
+    def top_p(self) -> float:
+        return float(self.get_param_value("top_p"))
+
+    @property
+    def top_k(self) -> int:
+        return int(self.get_param_value("top_k"))
 
     @property
     def worker_timeout(self) -> int:
@@ -190,6 +216,8 @@ class LocalGGUFTranslator(BaseTranslator):
             "gpu_layers": self._gpu_layers(),
             "threads": int(self.get_param_value("threads")),
             "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
             "thinking_mode": self.thinking_mode,
             "structure_retry_count": int(self._optional_param_value("structure retry count", 1)),
             "chunk_context_cells": int(self._optional_param_value("chunk context cells", 2)),
@@ -300,6 +328,14 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
             "value": 0.15,
             "description": "Sampling temperature. A small value can improve natural dialogue while staying stable.",
         },
+        "top p": {
+            "value": 1.0,
+            "description": "Nucleus sampling top_p. Lower values narrow token choices; 1.0 disables nucleus filtering.",
+        },
+        "top k": {
+            "value": 40,
+            "description": "Top-k sampling limit. 0 disables top-k filtering in llama.cpp.",
+        },
         "thinking mode": {
             "type": "checkbox",
             "value": True,
@@ -316,7 +352,16 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
         "style guide": {
             "type": "editor",
             "value": GEMMA_KOREAN_STYLE_GUIDE,
+            "hidden": True,
             "description": "Optional Gemma translation style guide. Empty uses the worker default.",
+        },
+        "style guide presets": {
+            "type": "style_guide_manager",
+            "value": {
+                "selected": "Default",
+                "styles": GEMMA_STYLE_GUIDE_PRESETS,
+            },
+            "description": "Select, add, replace, or delete reusable Gemma translation style guides.",
         },
     }
 
@@ -383,6 +428,14 @@ class Qwen35NineBGGUFTranslator(LocalGGUFTranslator):
         "temperature": {
             "value": 0.0,
             "description": "Sampling temperature. 0 keeps translation deterministic.",
+        },
+        "top p": {
+            "value": 1.0,
+            "description": "Nucleus sampling top_p. Lower values narrow token choices; 1.0 disables nucleus filtering.",
+        },
+        "top k": {
+            "value": 40,
+            "description": "Top-k sampling limit. 0 disables top-k filtering in llama.cpp.",
         },
         "thinking mode": {
             "type": "checkbox",
