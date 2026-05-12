@@ -16,8 +16,20 @@ MODEL_FILES = {
     "Q4_K_M": "gemma-4-E4B-it-Q4_K_M.gguf",
     # The upstream repo publishes the requested Q6_K_M-level quant as Q6_K.
     "Q6_K_M": "gemma-4-E4B-it-Q6_K.gguf",
+    "UD-Q8_K_XL": "gemma-4-E4B-it-UD-Q8_K_XL.gguf",
 }
 DEFAULT_QUANTIZATION = "Q4_K_M"
+GEMMA_MTP_REPO_ID = "AtomicChat/gemma-4-E4B-it-assistant-GGUF"
+GEMMA_MTP_ORIGINAL_REPO_ID = "google/gemma-4-E4B-it-assistant"
+GEMMA_MTP_MODEL_DIR = "data/models/gemma-4-E4B-it-assistant-GGUF"
+GEMMA_MTP_MODEL_FILES = {
+    "Q4_K_M": "gemma-4-E4B-it-assistant.Q4_K_M.gguf",
+    "Q4_K_S": "gemma-4-E4B-it-assistant.Q4_K_S.gguf",
+    "Q5_K_M": "gemma-4-E4B-it-assistant.Q5_K_M.gguf",
+    "Q8_0": "gemma-4-E4B-it-assistant.Q8_0.gguf",
+    "F16": "gemma-4-E4B-it-assistant.F16.gguf",
+}
+DEFAULT_MTP_QUANTIZATION = "Q4_K_M"
 QWEN35_MODEL_REPO_ID = "unsloth/Qwen3.5-9B-GGUF"
 QWEN35_MODEL_DIR = "data/models/Qwen3.5-9B-GGUF"
 QWEN35_MODEL_FILES = {
@@ -91,6 +103,11 @@ class LocalGGUFTranslator(BaseTranslator):
     model_dir = ""
     model_files: Dict[str, str] = {}
     default_quantization = DEFAULT_QUANTIZATION
+    mtp_model_repo_id = ""
+    mtp_original_repo_id = ""
+    mtp_model_dir = ""
+    mtp_model_files: Dict[str, str] = {}
+    default_mtp_quantization = DEFAULT_MTP_QUANTIZATION
     runtime_path = RUNTIME_PATH
     worker_path = WORKER_PATH
     worker_python_env_var = "BALLOONTRANS_GEMMA4_PYTHON"
@@ -114,11 +131,15 @@ class LocalGGUFTranslator(BaseTranslator):
 
     @property
     def top_p(self) -> float:
-        return float(self.get_param_value("top_p"))
+        if self.params is not None and "top_p" in self.params:
+            return float(self.get_param_value("top_p"))
+        return float(self.get_param_value("top p"))
 
     @property
     def top_k(self) -> int:
-        return int(self.get_param_value("top_k"))
+        if self.params is not None and "top_k" in self.params:
+            return int(self.get_param_value("top_k"))
+        return int(self.get_param_value("top k"))
 
     @property
     def worker_timeout(self) -> int:
@@ -138,6 +159,37 @@ class LocalGGUFTranslator(BaseTranslator):
     @property
     def model_path(self) -> str:
         return str(Path(type(self).model_dir) / self.model_filename)
+
+    @property
+    def mtp_mode(self) -> str:
+        if self.params is None or "official MTP" not in self.params or not type(self).mtp_model_files:
+            return "Off"
+        value = self.get_param_value("official MTP")
+        if isinstance(value, bool):
+            return "Auto" if value else "Off"
+        mode = str(value).strip()
+        if mode.lower() in {"1", "true", "yes", "on"}:
+            return "Auto"
+        if mode.lower() in {"0", "false", "no", "off"}:
+            return "Off"
+        return mode if mode in {"Auto", "Off", "Required"} else "Auto"
+
+    @property
+    def mtp_quantization(self) -> str:
+        if self.params is None or "MTP quantization" not in self.params or not type(self).mtp_model_files:
+            return type(self).default_mtp_quantization
+        quantization = self.get_param_value("MTP quantization")
+        if quantization not in type(self).mtp_model_files:
+            return type(self).default_mtp_quantization
+        return quantization
+
+    @property
+    def mtp_model_filename(self) -> str:
+        return type(self).mtp_model_files[self.mtp_quantization]
+
+    @property
+    def mtp_model_path(self) -> str:
+        return str(Path(type(self).mtp_model_dir) / self.mtp_model_filename)
 
     def _resolve_worker_python(self) -> Optional[str]:
         configured = self.get_param_value("worker python")
@@ -175,6 +227,32 @@ class LocalGGUFTranslator(BaseTranslator):
             return self.get_param_value(param_key)
         return default
 
+    def _run_worker_subprocess(self, worker_python: str, payload: Dict, env_updates: Optional[Dict[str, str]] = None):
+        run_kwargs = {
+            "input": json.dumps(payload, ensure_ascii=False),
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "timeout": self.worker_timeout,
+            "check": False,
+        }
+        if env_updates:
+            env = os.environ.copy()
+            env.update(env_updates)
+            run_kwargs["env"] = env
+        return subprocess.run([worker_python, str(type(self).worker_path)], **run_kwargs)
+
+    @staticmethod
+    def _worker_error_message(proc) -> str:
+        err = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else f"exit code {proc.returncode}"
+        try:
+            error_payload = json.loads(err)
+            if isinstance(error_payload, dict) and error_payload.get("error"):
+                return str(error_payload["error"])
+        except json.JSONDecodeError:
+            pass
+        return err
+
     def _translate(self, src_list: List[str]) -> List[str]:
         if not src_list:
             return []
@@ -192,6 +270,23 @@ class LocalGGUFTranslator(BaseTranslator):
                     + (f" You can run `{type(self).download_command}`." if type(self).download_command else "")
                 ),
             )
+
+        if self.mtp_mode == "Required":
+            mtp_server_url = self._optional_param_value("MTP server URL", "")
+            mtp_server_path = self._optional_param_value("MTP llama-server path", "")
+            if not mtp_server_url and not osp.isfile(self.mtp_model_path):
+                return self._subprocess_error_translations(
+                    src_list,
+                    (
+                        f"Official Gemma MTP {self.mtp_quantization} head is missing: {self.mtp_model_path}. "
+                        f"Download {type(self).mtp_model_repo_id}/{self.mtp_model_filename} to {type(self).mtp_model_dir}."
+                    ),
+                )
+            if not mtp_server_url and not mtp_server_path:
+                return self._subprocess_error_translations(
+                    src_list,
+                    "Official Gemma MTP requires an existing MTP server URL or an atomic llama-server binary path.",
+                )
 
         worker_python = self._resolve_worker_python()
         if not worker_python:
@@ -223,17 +318,23 @@ class LocalGGUFTranslator(BaseTranslator):
             "chunk_context_cells": int(self._optional_param_value("chunk context cells", 2)),
             "style_guide": str(self._optional_param_value("style guide", "")),
         }
+        if type(self).mtp_model_files:
+            payload.update({
+                "mtp_mode": self.mtp_mode,
+                "mtp_model_path": self.mtp_model_path,
+                "mtp_model_quantization": self.mtp_quantization,
+                "mtp_model_log_name": "Official Gemma MTP",
+                "mtp_server_url": str(self._optional_param_value("MTP server URL", "")),
+                "mtp_server_path": str(self._optional_param_value("MTP llama-server path", "")),
+                "mtp_server_host": str(self._optional_param_value("MTP server host", "127.0.0.1")),
+                "mtp_server_port": int(self._optional_param_value("MTP server port", 18080)),
+                "mtp_server_timeout": int(self._optional_param_value("MTP server timeout", 120)),
+                "mtp_draft_block_size": int(self._optional_param_value("MTP draft block size", 3)),
+                "mtp_draft_max": int(self._optional_param_value("MTP draft max", 8)),
+            })
 
         try:
-            proc = subprocess.run(
-                [worker_python, str(type(self).worker_path)],
-                input=json.dumps(payload, ensure_ascii=False),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=self.worker_timeout,
-                check=False,
-            )
+            proc = self._run_worker_subprocess(worker_python, payload)
         except Exception as exc:
             self.logger.error(f"{type(self).model_log_name} subprocess failed to start: {exc}")
             return self._subprocess_error_translations(
@@ -243,8 +344,37 @@ class LocalGGUFTranslator(BaseTranslator):
 
         if proc.returncode != 0:
             self.logger.error(f"{type(self).model_log_name} subprocess failed with code {proc.returncode}: {proc.stderr}")
-            err = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else f"exit code {proc.returncode}"
-            return self._subprocess_error_translations(src_list, f"{type(self).model_log_name} subprocess failed: {err}")
+            err = self._worker_error_message(proc)
+            should_retry_cpu = (
+                payload["gpu_layers"] != 0
+                and (
+                    "failed to create the Gemma context" in err
+                    or "Failed to create llama_context" in err
+                    or proc.returncode < 0
+                )
+            )
+            if not should_retry_cpu:
+                return self._subprocess_error_translations(src_list, f"{type(self).model_log_name} subprocess failed: {err}")
+
+            fallback_payload = dict(payload)
+            fallback_payload["gpu_layers"] = 0
+            try:
+                proc = self._run_worker_subprocess(worker_python, fallback_payload, {"GGML_METAL_DEVICES": ""})
+            except Exception as exc:
+                self.logger.error(f"{type(self).model_log_name} CPU fallback subprocess failed to start: {exc}")
+                return self._subprocess_error_translations(
+                    src_list,
+                    f"{type(self).model_log_name} CPU fallback subprocess failed to start: {exc}",
+                )
+            if proc.returncode != 0:
+                fallback_err = self._worker_error_message(proc)
+                self.logger.error(
+                    f"{type(self).model_log_name} CPU fallback subprocess failed with code {proc.returncode}: {proc.stderr}"
+                )
+                return self._subprocess_error_translations(
+                    src_list,
+                    f"{type(self).model_log_name} subprocess failed: {err}; CPU fallback failed: {fallback_err}",
+                )
 
         try:
             response = json.loads(proc.stdout)
@@ -273,6 +403,11 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
     model_dir = MODEL_DIR
     model_files = MODEL_FILES
     default_quantization = DEFAULT_QUANTIZATION
+    mtp_model_repo_id = GEMMA_MTP_REPO_ID
+    mtp_original_repo_id = GEMMA_MTP_ORIGINAL_REPO_ID
+    mtp_model_dir = GEMMA_MTP_MODEL_DIR
+    mtp_model_files = GEMMA_MTP_MODEL_FILES
+    default_mtp_quantization = DEFAULT_MTP_QUANTIZATION
     download_command = "python scripts/setup_gemma4_runtime.py --download-model"
     hf_model_repo_id = MODEL_REPO_ID
     hf_model_save_dir = MODEL_DIR
@@ -282,7 +417,7 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
     params: Dict = {
         "description": (
             "Offline Gemma 4 E4B-it translator using unsloth/gemma-4-E4B-it-GGUF "
-            "Q4_K_M or Q6_K_M. Place the selected GGUF file in data/models/gemma-4-E4B-it-GGUF."
+            "Q4_K_M, Q6_K_M, or UD-Q8_K_XL. Place the selected GGUF file in data/models/gemma-4-E4B-it-GGUF."
         ),
         "device": DEVICE_SELECTOR(),
         "model quantization": {
@@ -290,6 +425,55 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
             "options": list(MODEL_FILES.keys()),
             "value": DEFAULT_QUANTIZATION,
             "description": "GGUF quantization. Q6_K_M uses the upstream gemma-4-E4B-it-Q6_K.gguf file.",
+        },
+        "official MTP": {
+            "type": "checkbox",
+            "value": False,
+            "description": (
+                "Use the official google/gemma-4-E4B-it-assistant MTP head when an MTP server is configured. "
+                "When no server is available, Gemma runs normally."
+            ),
+        },
+        "MTP quantization": {
+            "type": "selector",
+            "options": list(GEMMA_MTP_MODEL_FILES.keys()),
+            "value": DEFAULT_MTP_QUANTIZATION,
+            "description": "GGUF quantization for the official Gemma MTP assistant head.",
+        },
+        "MTP server URL": {
+            "value": "",
+            "hidden": True,
+            "description": "Optional OpenAI-compatible llama-server URL already launched with --mtp-head and --spec-type mtp.",
+        },
+        "MTP llama-server path": {
+            "value": "",
+            "hidden": True,
+            "description": "Optional atomic-llama-cpp-turboquant llama-server binary. If set, the worker starts it with the MTP head for each translation call.",
+        },
+        "MTP server host": {
+            "value": "127.0.0.1",
+            "hidden": True,
+            "description": "Host used when the worker starts an MTP llama-server.",
+        },
+        "MTP server port": {
+            "value": 18080,
+            "hidden": True,
+            "description": "Port used when the worker starts an MTP llama-server.",
+        },
+        "MTP server timeout": {
+            "value": 120,
+            "hidden": True,
+            "description": "Seconds to wait for the MTP llama-server to become ready.",
+        },
+        "MTP draft block size": {
+            "value": 3,
+            "hidden": True,
+            "description": "Gemma MTP draft block size passed to llama-server.",
+        },
+        "MTP draft max": {
+            "value": 8,
+            "hidden": True,
+            "description": "Maximum MTP draft tokens passed to llama-server.",
         },
         "worker python": {
             "value": "",
@@ -325,16 +509,16 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
             "description": "llama.cpp CPU threads. 0 lets llama.cpp choose automatically.",
         },
         "temperature": {
-            "value": 0.15,
-            "description": "Sampling temperature. A small value can improve natural dialogue while staying stable.",
+            "value": 1.0,
+            "description": "Sampling temperature. Gemma's official text-generation recommendation is 1.0.",
         },
         "top p": {
-            "value": 1.0,
-            "description": "Nucleus sampling top_p. Lower values narrow token choices; 1.0 disables nucleus filtering.",
+            "value": 0.95,
+            "description": "Nucleus sampling top_p. Gemma's official text-generation recommendation is 0.95.",
         },
         "top k": {
-            "value": 40,
-            "description": "Top-k sampling limit. 0 disables top-k filtering in llama.cpp.",
+            "value": 64,
+            "description": "Top-k sampling limit. Gemma's official text-generation recommendation is 64.",
         },
         "thinking mode": {
             "type": "checkbox",

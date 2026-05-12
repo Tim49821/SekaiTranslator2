@@ -1,10 +1,15 @@
 import gc
 import json
+import os
 import re
+import shlex
+import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib import request as urlrequest
 
 try:
     from llama_cpp import Llama
@@ -17,6 +22,7 @@ else:
 
 CJK_PATTERN = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7a3]")
 THINK_PATTERN = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+GEMMA_THOUGHT_PATTERN = re.compile(r"<\|channel\>thought\s*.*?<channel\|>", re.IGNORECASE | re.DOTALL)
 DEFAULT_STYLE_GUIDE = (
     "For Japanese-to-Korean manga translation, write 자연스러운 한국어 대사. "
     "Prefer fluent Korean dialogue over literal Japanese word order. Preserve character voice, "
@@ -46,6 +52,13 @@ def _payload_float(payload: Dict, key: str, default: float) -> float:
         return default
 
 
+def _payload_str(payload: Dict, key: str, default: str = "") -> str:
+    value = payload.get(key, default)
+    if value is None:
+        return default
+    return str(value).strip()
+
+
 def _default_style_guide(source_lang: str, target_lang: str) -> str:
     if source_lang == "Japanese" and target_lang == "Korean":
         return DEFAULT_STYLE_GUIDE
@@ -62,10 +75,12 @@ def _build_page_messages(
     strict: bool = False,
 ) -> List[Dict[str, str]]:
     thinking_instruction = (
-        "Thinking mode is enabled, but the final answer must still contain only the requested JSON translations."
+        "Thinking mode is enabled with Gemma's official <|think|> control token, "
+        "but the final answer must still contain only the requested JSON translations."
         if thinking_mode
         else "Thinking mode is disabled. Do not output hidden reasoning, analysis, or thinking blocks."
     )
+    thinking_prefix = "<|think|>" if thinking_mode else ""
     style_instruction = style_guide.strip() or _default_style_guide(source_lang, target_lang)
     retry_instruction = (
         "This is a strict retry because the previous answer had invalid JSON, missing ids, or mismatched counts. "
@@ -74,7 +89,7 @@ def _build_page_messages(
         else ""
     )
     system_prompt = (
-        "You are a professional manga and comic translator. Translate every requested text cell from one page. "
+        f"{thinking_prefix}You are a professional manga and comic translator. Translate every requested text cell from one page. "
         "Your highest priority is natural, fluent dialogue that preserves the original writing style, tone, "
         "speech level, characterization, terminology, and phrasing consistency across the page. "
         f"{style_instruction} "
@@ -127,16 +142,30 @@ def _load_model(payload: Dict):
     max_input_tokens = _payload_int(payload, "max_input_tokens", 4096)
     max_new_tokens = _payload_int(payload, "max_new_tokens", 2048)
     n_ctx = max(_payload_int(payload, "context_tokens", 8192), max_input_tokens + max_new_tokens + 512)
+    gpu_layers = _payload_int(payload, "gpu_layers", 0)
+    if gpu_layers <= 0:
+        os.environ["GGML_METAL_DEVICES"] = ""
     kwargs = {
         "model_path": model_path,
         "n_ctx": n_ctx,
-        "n_gpu_layers": int(payload["gpu_layers"]),
+        "n_gpu_layers": gpu_layers,
         "verbose": False,
     }
+    if gpu_layers <= 0:
+        kwargs["offload_kqv"] = False
+        kwargs["op_offload"] = False
     threads = _payload_int(payload, "threads", 0)
     if threads > 0:
         kwargs["n_threads"] = threads
-    return Llama(**kwargs)
+    try:
+        return Llama(**kwargs)
+    except ValueError as exc:
+        if "Failed to create llama_context" in str(exc):
+            raise RuntimeError(
+                "llama.cpp failed to create the Gemma context. "
+                "If this also happens with MTP off, the local llama-cpp-python runtime is likely failing during backend initialization."
+            ) from exc
+        raise
 
 
 def _extract_content(response) -> str:
@@ -157,6 +186,7 @@ def _extract_content(response) -> str:
 
 def _clean_translation(text: str) -> str:
     text = THINK_PATTERN.sub("", text)
+    text = GEMMA_THOUGHT_PATTERN.sub("", text)
     text = text.strip()
     text = text.strip("`")
     for prefix in (
@@ -173,6 +203,7 @@ def _clean_translation(text: str) -> str:
 
 def _extract_json_array(text: str):
     text = THINK_PATTERN.sub("", text).strip()
+    text = GEMMA_THOUGHT_PATTERN.sub("", text).strip()
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -240,6 +271,149 @@ def _coerce_page_translations(response_text: str, expected_ids: List[int]) -> Li
 
 def _empty_cache():
     gc.collect()
+
+
+class _OpenAIChatClient:
+    def __init__(self, base_url: str, timeout: int, model_name: str = "local"):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.model_name = model_name
+
+    def create_chat_completion(self, **kwargs):
+        payload = {
+            "model": self.model_name,
+            "messages": kwargs["messages"],
+            "max_tokens": kwargs["max_tokens"],
+            "temperature": kwargs["temperature"],
+            "top_p": kwargs["top_p"],
+            "top_k": kwargs["top_k"],
+        }
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urlrequest.Request(
+            f"{self.base_url}/v1/chat/completions",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlrequest.urlopen(req, timeout=self.timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+def _server_url(payload: Dict) -> str:
+    configured = _payload_str(payload, "mtp_server_url")
+    if configured:
+        return configured.rstrip("/")
+    host = _payload_str(payload, "mtp_server_host", "127.0.0.1")
+    port = _payload_int(payload, "mtp_server_port", 18080)
+    return f"http://{host}:{port}"
+
+
+def _wait_for_server(base_url: str, proc: Optional[subprocess.Popen], timeout: int):
+    deadline = time.time() + max(1, timeout)
+    last_exc = None
+    while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"MTP llama-server exited early with code {proc.returncode}")
+        try:
+            with urlrequest.urlopen(f"{base_url}/health", timeout=2) as response:
+                if response.status < 500:
+                    return
+        except Exception as exc:
+            last_exc = exc
+        try:
+            with urlrequest.urlopen(f"{base_url}/v1/models", timeout=2) as response:
+                if response.status < 500:
+                    return
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(0.5)
+    raise RuntimeError(f"MTP llama-server did not become ready at {base_url}: {last_exc}")
+
+
+def _mtp_mode(payload: Dict) -> str:
+    raw_mode = payload.get("mtp_mode", "Off")
+    if isinstance(raw_mode, bool):
+        return "Auto" if raw_mode else "Off"
+    mode = str(raw_mode).strip()
+    if mode.lower() in {"1", "true", "yes", "on"}:
+        return "Auto"
+    if mode.lower() in {"0", "false", "no", "off"}:
+        return "Off"
+    return mode if mode in {"Auto", "Off", "Required"} else "Auto"
+
+
+def _start_mtp_server(payload: Dict) -> Tuple[_OpenAIChatClient, Optional[subprocess.Popen]]:
+    base_url = _server_url(payload)
+    timeout = _payload_int(payload, "mtp_server_timeout", 120)
+    configured_url = _payload_str(payload, "mtp_server_url")
+    if configured_url:
+        _wait_for_server(base_url, None, timeout)
+        return _OpenAIChatClient(base_url, timeout, _payload_str(payload, "model_log_name", "local")), None
+
+    server_path = _payload_str(payload, "mtp_server_path")
+    if not server_path:
+        raise RuntimeError("Official Gemma MTP requires `mtp_server_url` or `mtp_server_path`.")
+    if not Path(server_path).is_file():
+        raise FileNotFoundError(f"MTP llama-server binary not found: {server_path}")
+
+    model_path = _payload_str(payload, "model_path")
+    mtp_model_path = _payload_str(payload, "mtp_model_path")
+    if not Path(mtp_model_path).is_file():
+        raise FileNotFoundError(f"Official Gemma MTP head not found: {mtp_model_path}")
+
+    gpu_layers = _payload_int(payload, "gpu_layers", 0)
+    cli_gpu_layers = 99 if gpu_layers < 0 else gpu_layers
+    command = [
+        server_path,
+        "-m", model_path,
+        "--mtp-head", mtp_model_path,
+        "--spec-type", "mtp",
+        "--draft-block-size", str(max(1, _payload_int(payload, "mtp_draft_block_size", 3))),
+        "--draft-max", str(max(1, _payload_int(payload, "mtp_draft_max", 8))),
+        "--draft-min", "0",
+        "-c", str(max(512, _payload_int(payload, "context_tokens", 8192))),
+        "-ngl", str(cli_gpu_layers),
+        "--host", _payload_str(payload, "mtp_server_host", "127.0.0.1"),
+        "--port", str(_payload_int(payload, "mtp_server_port", 18080)),
+    ]
+    threads = _payload_int(payload, "threads", 0)
+    if threads > 0:
+        command.extend(["-t", str(threads)])
+    extra_args = _payload_str(payload, "mtp_server_args")
+    if extra_args:
+        command.extend(shlex.split(extra_args))
+
+    proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        _wait_for_server(base_url, proc, timeout)
+    except Exception:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise
+    return _OpenAIChatClient(base_url, timeout, _payload_str(payload, "model_log_name", "local")), proc
+
+
+def _should_use_mtp(payload: Dict) -> bool:
+    mode = _mtp_mode(payload)
+    if mode == "Off":
+        return False
+    mtp_model_path = _payload_str(payload, "mtp_model_path")
+    has_server_url = bool(_payload_str(payload, "mtp_server_url"))
+    has_server_path = bool(_payload_str(payload, "mtp_server_path"))
+    has_head = bool(mtp_model_path and Path(mtp_model_path).is_file())
+    if has_server_url or (has_head and has_server_path):
+        return True
+    if mode == "Required":
+        missing = []
+        if not has_server_url and not has_head:
+            missing.append(f"MTP head file ({mtp_model_path or 'unset'})")
+        if not has_server_url and not has_server_path:
+            missing.append("MTP server URL/path")
+        raise RuntimeError("Official Gemma MTP is required but missing: " + ", ".join(missing))
+    return False
 
 
 def _message_token_count(llm, messages: List[Dict[str, str]]) -> int:
@@ -473,25 +647,43 @@ def _translate_page(llm, payload: Dict, indexed_texts: List[Tuple[int, str]]) ->
     return _repair_suspicious_translations(llm, payload, indexed_texts, translations)
 
 
+def _translate_with_llm(llm, payload: Dict) -> List[str]:
+    indexed_texts = [
+        (idx, source_text)
+        for idx, source_text in enumerate(payload["texts"])
+        if isinstance(source_text, str) and source_text.strip()
+    ]
+    translations = [""] * len(payload["texts"])
+    if not indexed_texts:
+        return translations
+
+    page_translations = _translate_page(llm, payload, indexed_texts)
+    for (source_idx, _), translated in zip(indexed_texts, page_translations):
+        translations[source_idx] = translated
+    return translations
+
+
 def translate(payload: Dict) -> List[str]:
     payload.setdefault("structure_retry_count", 1)
     payload.setdefault("chunk_context_cells", 2)
     payload.setdefault("style_guide", "")
+    payload.setdefault("mtp_mode", "Off")
+    if _should_use_mtp(payload):
+        client, proc = _start_mtp_server(payload)
+        try:
+            return _translate_with_llm(client, payload)
+        finally:
+            if proc is not None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            _empty_cache()
+
     llm = _load_model(payload)
     try:
-        indexed_texts = [
-            (idx, source_text)
-            for idx, source_text in enumerate(payload["texts"])
-            if isinstance(source_text, str) and source_text.strip()
-        ]
-        translations = [""] * len(payload["texts"])
-        if not indexed_texts:
-            return translations
-
-        page_translations = _translate_page(llm, payload, indexed_texts)
-        for (source_idx, _), translated in zip(indexed_texts, page_translations):
-            translations[source_idx] = translated
-        return translations
+        return _translate_with_llm(llm, payload)
     finally:
         del llm
         _empty_cache()

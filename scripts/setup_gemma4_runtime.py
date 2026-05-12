@@ -8,6 +8,7 @@ from pathlib import Path
 APP_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = APP_ROOT / "data" / "models" / "gemma-4-runtime"
 DEFAULT_QUANTIZATION = "Q4_K_M"
+DEFAULT_MTP_QUANTIZATION = "Q4_K_M"
 MODEL_CONFIGS = {
     "gemma4": {
         "display_name": "Gemma4 GGUF",
@@ -16,6 +17,21 @@ MODEL_CONFIGS = {
         "files": {
             "Q4_K_M": "gemma-4-E4B-it-Q4_K_M.gguf",
             "Q6_K_M": "gemma-4-E4B-it-Q6_K.gguf",
+            "UD-Q8_K_XL": "gemma-4-E4B-it-UD-Q8_K_XL.gguf",
+        },
+        "mtp": {
+            "display_name": "Official Gemma4 E4B MTP head",
+            "repo_id": "AtomicChat/gemma-4-E4B-it-assistant-GGUF",
+            "model_dir": APP_ROOT / "data" / "models" / "gemma-4-E4B-it-assistant-GGUF",
+            "files": {
+                "Q4_K_M": "gemma-4-E4B-it-assistant.Q4_K_M.gguf",
+                "Q4_K_S": "gemma-4-E4B-it-assistant.Q4_K_S.gguf",
+                "Q5_K_M": "gemma-4-E4B-it-assistant.Q5_K_M.gguf",
+                "Q8_0": "gemma-4-E4B-it-assistant.Q8_0.gguf",
+                "F16": "gemma-4-E4B-it-assistant.F16.gguf",
+            },
+            "download_env": "BALLOONTRANS_DOWNLOAD_GEMMA4_MTP",
+            "quant_env": "BALLOONTRANS_GEMMA4_MTP_QUANT",
         },
         "download_env": "BALLOONTRANS_DOWNLOAD_GEMMA4_GGUF",
         "quant_env": "BALLOONTRANS_GEMMA4_GGUF_QUANT",
@@ -51,6 +67,15 @@ def should_download_model() -> bool:
         return True
     return any(
         os.environ.get(config["download_env"], "").strip().lower() in {"1", "true", "yes"}
+        for config in MODEL_CONFIGS.values()
+    )
+
+
+def should_download_mtp() -> bool:
+    if any(arg == "--download-mtp" for arg in sys.argv[1:]):
+        return True
+    return any(
+        os.environ.get(config.get("mtp", {}).get("download_env", ""), "").strip().lower() in {"1", "true", "yes"}
         for config in MODEL_CONFIGS.values()
     )
 
@@ -97,6 +122,25 @@ def selected_quantization(model_key: str) -> str:
     return quantization
 
 
+def selected_mtp_quantization(model_key: str) -> str:
+    args = sys.argv[1:]
+    mtp_config = MODEL_CONFIGS[model_key].get("mtp")
+    if not mtp_config:
+        raise ValueError(f"{MODEL_CONFIGS[model_key]['display_name']} does not define an MTP head.")
+    quantization = os.environ.get(mtp_config["quant_env"], DEFAULT_MTP_QUANTIZATION)
+    for idx, arg in enumerate(args):
+        if arg.startswith("--mtp-quant="):
+            quantization = arg.split("=", 1)[1]
+        elif arg == "--mtp-quant" and idx + 1 < len(args):
+            quantization = args[idx + 1]
+
+    quantization = quantization.upper()
+    if quantization not in mtp_config["files"]:
+        valid = ", ".join(mtp_config["files"])
+        raise ValueError(f"Unsupported {mtp_config['display_name']} quantization: {quantization}. Valid options: {valid}")
+    return quantization
+
+
 def download_model(py: Path, model_key: str):
     config = MODEL_CONFIGS[model_key]
     quantization = selected_quantization(model_key)
@@ -114,6 +158,29 @@ def download_model(py: Path, model_key: str):
         f"local_dir={str(model_dir)!r}, local_dir_use_symlinks=False)"
     )
     print(f"Downloading {config['display_name']} {quantization}: {config['repo_id']}/{model_filename}")
+    run([py, "-c", code])
+
+
+def download_mtp(py: Path, model_key: str):
+    mtp_config = MODEL_CONFIGS[model_key].get("mtp")
+    if not mtp_config:
+        raise ValueError(f"{MODEL_CONFIGS[model_key]['display_name']} does not define an MTP head.")
+
+    quantization = selected_mtp_quantization(model_key)
+    model_filename = mtp_config["files"][quantization]
+    model_dir = mtp_config["model_dir"]
+    model_path = model_dir / model_filename
+    if model_path.exists():
+        print(f"{mtp_config['display_name']} already exists: {model_path}")
+        return
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    code = (
+        "from huggingface_hub import hf_hub_download; "
+        f"hf_hub_download(repo_id={mtp_config['repo_id']!r}, filename={model_filename!r}, "
+        f"local_dir={str(model_dir)!r}, local_dir_use_symlinks=False)"
+    )
+    print(f"Downloading {mtp_config['display_name']} {quantization}: {mtp_config['repo_id']}/{model_filename}")
     run([py, "-c", code])
 
 
@@ -138,6 +205,8 @@ def main():
     ])
     if should_download_model():
         download_model(py, model_key)
+    if should_download_mtp():
+        download_mtp(py, model_key)
     print(f"GGUF runtime ready: {py}")
 
 

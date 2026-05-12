@@ -297,6 +297,12 @@ class GGUFSetupRuntimeTest(unittest.TestCase):
             self.assertEqual(setup_gemma4_runtime.selected_model_key(), "qwen35")
             self.assertEqual(setup_gemma4_runtime.selected_quantization("qwen35"), "Q4_K_M")
 
+    def test_setup_script_selects_gemma_ud_q8_quantization(self):
+        with patch.object(sys, "argv", ["setup_gemma4_runtime.py", "--model", "gemma", "--quant", "UD-Q8_K_XL"]), \
+             patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(setup_gemma4_runtime.selected_model_key(), "gemma4")
+            self.assertEqual(setup_gemma4_runtime.selected_quantization("gemma4"), "UD-Q8_K_XL")
+
     def test_setup_script_downloads_qwen35_to_declared_model_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = setup_gemma4_runtime.MODEL_CONFIGS["qwen35"]
@@ -315,6 +321,25 @@ class GGUFSetupRuntimeTest(unittest.TestCase):
         self.assertEqual(command[1], "-c")
         self.assertIn("unsloth/Qwen3.5-9B-GGUF", command[2])
         self.assertIn("Qwen3.5-9B-Q4_K_M.gguf", command[2])
+
+    def test_setup_script_downloads_gemma_mtp_head(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = setup_gemma4_runtime.MODEL_CONFIGS["gemma4"]["mtp"]
+            original_model_dir = config["model_dir"]
+            config["model_dir"] = Path(temp_dir)
+            try:
+                with patch.object(sys, "argv", ["setup_gemma4_runtime.py", "--model", "gemma", "--download-mtp"]), \
+                     patch("scripts.setup_gemma4_runtime.run") as run_mock:
+                    setup_gemma4_runtime.download_mtp(Path("/fake/python"), "gemma4")
+            finally:
+                config["model_dir"] = original_model_dir
+
+        run_mock.assert_called_once()
+        command = run_mock.call_args.args[0]
+        self.assertEqual(command[0], Path("/fake/python"))
+        self.assertEqual(command[1], "-c")
+        self.assertIn("AtomicChat/gemma-4-E4B-it-assistant-GGUF", command[2])
+        self.assertIn("gemma-4-E4B-it-assistant.Q4_K_M.gguf", command[2])
 
 
 class NLLBTranslatorTest(unittest.TestCase):
@@ -378,6 +403,34 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(payload["structure_retry_count"], 1)
         self.assertEqual(payload["chunk_context_cells"], 2)
         self.assertIn("자연스러운 한국어", payload["style_guide"])
+        self.assertEqual(payload["mtp_mode"], "Off")
+        self.assertIn("gemma-4-E4B-it-assistant.Q4_K_M.gguf", payload["mtp_model_path"])
+
+    def test_metal_context_failure_retries_cpu_worker(self):
+        first = FakeCompletedProcess(
+            stderr='{"error":"llama.cpp failed to create the Gemma context."}',
+            returncode=1,
+        )
+        second = FakeCompletedProcess(stdout='{"translations":["one"]}')
+        with patch("modules.translators.trans_gemma4.osp.isfile", return_value=True), \
+             patch("modules.translators.trans_gemma4.subprocess.run", side_effect=[first, second]) as run_mock:
+            translator = Gemma4E4BTranslator(
+                "日本語",
+                "한국어",
+                **{
+                    "worker python": "/fake/python",
+                    "device": "mps",
+                    "gpu layers": -1,
+                },
+            )
+            result = translator.translate(["line one"])
+
+        self.assertEqual(result, ["one"])
+        first_payload = json.loads(run_mock.call_args_list[0].kwargs["input"])
+        second_payload = json.loads(run_mock.call_args_list[1].kwargs["input"])
+        self.assertEqual(first_payload["gpu_layers"], -1)
+        self.assertEqual(second_payload["gpu_layers"], 0)
+        self.assertEqual(run_mock.call_args_list[1].kwargs["env"]["GGML_METAL_DEVICES"], "")
 
     def test_q6_quantization_uses_upstream_q6_file(self):
         stdout = '{"translations":["one"]}'
@@ -397,6 +450,64 @@ class GemmaTranslatorTest(unittest.TestCase):
         payload = json.loads(run_mock.call_args.kwargs["input"])
         self.assertEqual(payload["model_quantization"], "Q6_K_M")
         self.assertEqual(payload["model_path"], "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q6_K.gguf")
+
+    def test_ud_q8_quantization_uses_requested_upstream_file(self):
+        stdout = '{"translations":["one"]}'
+        with patch("modules.translators.trans_gemma4.osp.isfile", return_value=True), \
+             patch("modules.translators.trans_gemma4.subprocess.run", return_value=FakeCompletedProcess(stdout=stdout)) as run_mock:
+            translator = Gemma4E4BTranslator(
+                "日本語",
+                "한국어",
+                **{
+                    "worker python": "/fake/python",
+                    "model quantization": "UD-Q8_K_XL",
+                },
+            )
+            result = translator.translate(["line one"])
+
+        self.assertEqual(result, ["one"])
+        payload = json.loads(run_mock.call_args.kwargs["input"])
+        self.assertEqual(payload["model_quantization"], "UD-Q8_K_XL")
+        self.assertEqual(payload["model_path"], "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-UD-Q8_K_XL.gguf")
+
+    def test_enabled_mtp_falls_back_when_no_server_is_configured(self):
+        stdout = '{"translations":["one"]}'
+        with patch("modules.translators.trans_gemma4.osp.isfile", side_effect=lambda path: "assistant" not in path), \
+             patch("modules.translators.trans_gemma4.subprocess.run", return_value=FakeCompletedProcess(stdout=stdout)) as run_mock:
+            translator = Gemma4E4BTranslator(
+                "日本語",
+                "한국어",
+                **{
+                    "worker python": "/fake/python",
+                    "official MTP": True,
+                    "model quantization": "UD-Q8_K_XL",
+                },
+            )
+            result = translator.translate(["line one"])
+
+        self.assertEqual(result, ["one"])
+        payload = json.loads(run_mock.call_args.kwargs["input"])
+        self.assertEqual(payload["mtp_mode"], "Auto")
+
+    def test_enabled_mtp_allows_existing_server_without_local_head(self):
+        stdout = '{"translations":["one"]}'
+        with patch("modules.translators.trans_gemma4.osp.isfile", side_effect=lambda path: "assistant" not in path), \
+             patch("modules.translators.trans_gemma4.subprocess.run", return_value=FakeCompletedProcess(stdout=stdout)) as run_mock:
+            translator = Gemma4E4BTranslator(
+                "日本語",
+                "한국어",
+                **{
+                    "worker python": "/fake/python",
+                    "official MTP": True,
+                    "MTP server URL": "http://127.0.0.1:18080",
+                },
+            )
+            result = translator.translate(["line one"])
+
+        self.assertEqual(result, ["one"])
+        payload = json.loads(run_mock.call_args.kwargs["input"])
+        self.assertEqual(payload["mtp_mode"], "Auto")
+        self.assertEqual(payload["mtp_server_url"], "http://127.0.0.1:18080")
 
     def test_qwen_gguf_uses_q4_model_file(self):
         stdout = '{"translations":["one"]}'
@@ -487,6 +598,7 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertIn('"id": 4', page_prompt)
         self.assertIn('"text": "line three"', page_prompt)
         self.assertNotIn("Previous source text", page_prompt)
+        self.assertTrue(system_prompt.startswith("<|think|>"))
         self.assertIn("highest priority is natural, fluent dialogue", system_prompt)
         self.assertIn("character voice", system_prompt)
         self.assertIn("자연스러운 한국어", page_prompt)
@@ -498,6 +610,8 @@ class GemmaTranslatorTest(unittest.TestCase):
 
     def test_worker_cleans_thinking_and_labels_from_output(self):
         cleaned = gemma4_worker._clean_translation("<think>notes</think>\nTranslation: 안녕")
+        self.assertEqual(cleaned, "안녕")
+        cleaned = gemma4_worker._clean_translation("<|channel>thought\nnotes<channel|>\nTranslation: 안녕")
         self.assertEqual(cleaned, "안녕")
 
     def test_worker_splits_large_pages_by_max_input_tokens(self):
