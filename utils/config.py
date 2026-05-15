@@ -283,7 +283,8 @@ def load_textstyle_from(p: str, raise_exception = False):
     pcfg.text_styles_path = p
 
 def load_config(config_path: str = shared.CONFIG_PATH):
-    if config_path != shared.CONFIG_PATH:
+    explicit_config_path = config_path != shared.CONFIG_PATH
+    if explicit_config_path:
         shared.CONFIG_PATH = config_path
         LOGGER.info(f'Using specified config file at {shared.CONFIG_PATH}')
 
@@ -293,6 +294,17 @@ def load_config(config_path: str = shared.CONFIG_PATH):
         except Exception as e:
             LOGGER.exception(e)
             LOGGER.warning("Failed to load config file, using default config")
+            config = ProgramConfig()
+    elif not explicit_config_path and osp.exists(shared.CONFIG_TEMPLATE_PATH):
+        LOGGER.info(
+            f'{shared.CONFIG_PATH} does not exist, using template from '
+            f'{shared.CONFIG_TEMPLATE_PATH}. Future saves will use the local config path.'
+        )
+        try:
+            config = ProgramConfig.load(shared.CONFIG_TEMPLATE_PATH)
+        except Exception as e:
+            LOGGER.exception(e)
+            LOGGER.warning("Failed to load config template, using default config")
             config = ProgramConfig()
     else:
         LOGGER.info(f'{shared.CONFIG_PATH} does not exist, new config file will be created.')
@@ -327,6 +339,9 @@ def json_dump_program_config(obj, **kwargs):
 def save_config():
     global pcfg
     try:
+        config_dir = osp.dirname(shared.CONFIG_PATH)
+        if config_dir and not osp.exists(config_dir):
+            os.makedirs(config_dir)
         tmp_save_tgt = shared.CONFIG_PATH + '.tmp'
         with open(tmp_save_tgt, 'w', encoding='utf8') as f:
             f.write(json_dump_program_config(pcfg))

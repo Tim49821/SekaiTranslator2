@@ -142,11 +142,11 @@ class BaseTranslator(BaseModule):
         if text_is_empty(text):
             return text
 
-        is_list = isinstance(text, List)
+        is_list = isinstance(text, list)
         concate_text = is_list and self.concate_text and not self.translate_by_textblock
         text_source = self.textlist2text(text) if concate_text else text
         
-        src_is_list = isinstance(text_source, List)
+        src_is_list = isinstance(text_source, list)
         if src_is_list: 
             text_trans = self._translate(text_source)
         else:

@@ -5,6 +5,7 @@ import os.path as osp
 import os
 import importlib
 import subprocess
+import shlex
 from platform import platform
 
 BRANCH = 'dev'
@@ -60,35 +61,52 @@ def is_installed(package):
     return spec is not None
 
 
+def command_parts(command):
+    if isinstance(command, (list, tuple)):
+        return [str(part) for part in command]
+    return shlex.split(command, posix=os.name != 'nt')
+
+
 def default_torch_command():
     # macOS wheels are published on PyPI, while the CUDA index is only valid
     # for Windows/Linux GPU installs. Keep the environment override available
     # so advanced users can still force a custom build.
     if sys.platform == 'darwin':
-        return "pip install torch torchvision torchaudio --disable-pip-version-check"
+        return ["pip", "install", "torch", "torchvision", "torchaudio", "--disable-pip-version-check"]
 
-    return "pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu118 --disable-pip-version-check"
+    return [
+        "pip",
+        "install",
+        "torch==2.7.1",
+        "torchvision==0.22.1",
+        "torchaudio==2.7.1",
+        "--index-url",
+        "https://download.pytorch.org/whl/cu118",
+        "--disable-pip-version-check",
+    ]
 
 
 def run(command, desc=None, errdesc=None, custom_env=None, live=False):
     if desc is not None:
         print(desc)
 
+    command_args = command_parts(command)
+    run_env = os.environ if custom_env is None else custom_env
     if live:
-        result = subprocess.run(command, shell=True, env=os.environ if custom_env is None else custom_env)
+        result = subprocess.run(command_args, env=run_env)
         if result.returncode != 0:
             raise RuntimeError(f"""{errdesc or 'Error running command'}.
-Command: {command}
+Command: {' '.join(command_args)}
 Error code: {result.returncode}""")
 
         return ""
 
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, env=os.environ if custom_env is None else custom_env)
+    result = subprocess.run(command_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=run_env)
 
     if result.returncode != 0:
 
         message = f"""{errdesc or 'Error running command'}.
-Command: {command}
+Command: {' '.join(command_args)}
 Error code: {result.returncode}
 stdout: {result.stdout.decode(encoding="utf8", errors="ignore") if len(result.stdout)>0 else '<empty>'}
 stderr: {result.stderr.decode(encoding="utf8", errors="ignore") if len(result.stderr)>0 else '<empty>'}
@@ -102,8 +120,11 @@ def run_pip(args, desc=None):
     if skip_install:
         return
 
-    index_url_line = f' --index-url {index_url}' if index_url != '' else ''
-    return run(f'"{python}" -m pip {args} --prefer-binary{index_url_line} --disable-pip-version-check --no-warn-script-location', desc=f"Installing {desc}", errdesc=f"Couldn't install {desc}", live=True)
+    pip_args = command_parts(args)
+    if index_url != '':
+        pip_args.extend(['--index-url', index_url])
+    pip_args.extend(['--prefer-binary', '--disable-pip-version-check', '--no-warn-script-location'])
+    return run([python, '-m', 'pip', *pip_args], desc=f"Installing {desc}", errdesc=f"Couldn't install {desc}", live=True)
 
 
 def commit_hash():
@@ -113,7 +134,7 @@ def commit_hash():
         return stored_commit_hash
 
     try:
-        stored_commit_hash = run(f"{git} rev-parse HEAD").strip()
+        stored_commit_hash = run([git, "rev-parse", "HEAD"]).strip()
     except Exception:
         stored_commit_hash = "<none>"
 
@@ -167,12 +188,12 @@ def main():
             print('Checking for updates...')
             try:
                 current_commit = commit_hash()
-                run(f"{git} fetch origin {BRANCH}", desc="Fetching updates from git...", errdesc="Failed to fetch updates.")
-                latest_commit = run(f"{git} rev-parse origin/{BRANCH}").strip()
+                run([git, "fetch", "origin", BRANCH], desc="Fetching updates from git...", errdesc="Failed to fetch updates.")
+                latest_commit = run([git, "rev-parse", f"origin/{BRANCH}"]).strip()
 
                 if current_commit != latest_commit:
                     print("New updates found. Updating repository...")
-                    run(f"{git} pull origin {BRANCH}", desc="Updating repository...", errdesc="Failed to update repository.")
+                    run([git, "pull", "origin", BRANCH], desc="Updating repository...", errdesc="Failed to update repository.")
                     print("Repository updated. Restarting to apply updates...")
                     restart()
                     return
@@ -315,8 +336,7 @@ def is_amd_gpu():
     try:
         if sys.platform == 'win32':
             # Windows: use wmic
-            cmd = 'wmic path win32_VideoController get name'
-            output = subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL)
+            output = subprocess.check_output(['wmic', 'path', 'win32_VideoController', 'get', 'name'], text=True, stderr=subprocess.DEVNULL)
             return any(keyword in output for keyword in ["AMD", "Radeon"])
 
         else:
@@ -329,8 +349,7 @@ def supported_amd_nightly_gpu():
     try:
         if sys.platform == 'win32':
             # Windows: use wmic
-            cmd = 'wmic path win32_VideoController get name'
-            output = subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL)
+            output = subprocess.check_output(['wmic', 'path', 'win32_VideoController', 'get', 'name'], text=True, stderr=subprocess.DEVNULL)
 
             if any(keyword in output for keyword in
                    ["RX 7900", "RX 7800", "RX 7700", "RX 7600", "PRO W7900", "PRO W7800", "PRO W7700"]):
@@ -349,7 +368,7 @@ def prepare_environment():
     try:
         import packaging
     except ModuleNotFoundError:
-        run_pip(f"install packaging", "install packaging")
+        run_pip(["install", "packaging"], "install packaging")
 
     from utils.package import check_req_file, check_reqs
 
@@ -364,7 +383,7 @@ def prepare_environment():
     if sys.platform == 'win32':
         for req in REQ_WIN:
             if not check_reqs([req]):
-                run_pip(f"install {req}", req)
+                run_pip(["install", req], req)
                 req_updated = True
 
     if is_amd_gpu():
@@ -372,24 +391,31 @@ def prepare_environment():
         if args.nightly:
             amd_nightly_gpu = supported_amd_nightly_gpu()
             if amd_nightly_gpu == "None":
-                Exception("No AMD Nightly GPU supported")
+                raise RuntimeError("No AMD Nightly GPU supported")
             if amd_nightly_gpu == "RDNA3":
-                torch_command = os.environ.get('TORCH_COMMAND',
-                                               "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl")
+                torch_command = os.environ.get(
+                    'TORCH_COMMAND',
+                    "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl",
+                )
             if amd_nightly_gpu == "RDNA4":
-                torch_command = os.environ.get('TORCH_COMMAND',
-                                               "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl")
+                torch_command = os.environ.get(
+                    'TORCH_COMMAND',
+                    "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl",
+                )
         else:
             # AMD GPU: Cuda 11.8, Pytorch 2.2.2
             torch_command = os.environ.get('TORCH_COMMAND', "pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cu118 --disable-pip-version-check")
     else:
         torch_command = os.environ.get('TORCH_COMMAND', default_torch_command())
     if args.reinstall_torch or not is_installed("torch") or not is_installed("torchvision"):
-        run(f'"{python}" -m {torch_command}', "Installing torch and torchvision", "Couldn't install torch", live=True)
+        torch_command_parts = command_parts(torch_command)
+        if torch_command_parts[:2] == ['pip', 'install']:
+            torch_command_parts = [python, '-m', *torch_command_parts]
+        run(torch_command_parts, "Installing torch and torchvision", "Couldn't install torch", live=True)
         req_updated = True
 
     if not check_req_file(args.requirements):
-        run_pip(f"install -r {args.requirements}", "requirements")
+        run_pip(["install", "-r", args.requirements], "requirements")
         req_updated = True
 
     if req_updated:

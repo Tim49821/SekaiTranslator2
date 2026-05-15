@@ -168,6 +168,10 @@ class OCRLensAPI_exp(OCRBase):
             "value": "ja",
             "description": "Target language code (e.g., 'ja', 'en', 'ru').",
         },
+        "api_key": {
+            "value": "",
+            "description": "Google Lens API key. Empty uses BALLOONTRANS_GOOGLE_LENS_API_KEY.",
+        },
         "proxy": {
             "value": "",
             "description": 'Proxy (requests format: e.g., http://user:pass@host:port or {"http": ..., "https": ...})',
@@ -197,6 +201,16 @@ class OCRLensAPI_exp(OCRBase):
     def target_language(self) -> str:
         lang = self.get_param_value("target_language")
         return lang if isinstance(lang, str) and len(lang) >= 2 else "ja"
+
+    @property
+    def api_key(self) -> str:
+        try:
+            key = self.get_param_value("api_key")
+        except Exception:
+            key = ""
+        if isinstance(key, str) and key.strip():
+            return key.strip()
+        return os.environ.get("BALLOONTRANS_GOOGLE_LENS_API_KEY", "").strip()
 
     @property
     def proxy(self) -> Optional[Dict[str, str]]:
@@ -246,12 +260,11 @@ class OCRLensAPI_exp(OCRBase):
         super().__init__(**params)
         self.last_request_time: float = 0
         self._api_url = "https://lensfrontend-pa.googleapis.com/v1/crupload"
-        self._api_key = "AIzaSyDr2UxVnv_U85AbhhY8XSHSIavUW0DC-sY"
+        self._api_key = self.api_key
         self._api_headers = {
             "Host": "lensfrontend-pa.googleapis.com",
             "Connection": "keep-alive",
             "Content-Type": "application/x-protobuf",
-            "X-Goog-Api-Key": self._api_key,
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-Mode": "no-cors",
             "Sec-Fetch-Dest": "empty",
@@ -259,6 +272,13 @@ class OCRLensAPI_exp(OCRBase):
             "Accept-Encoding": "gzip, deflate, br",
             "Accept-Language": "en-US,en;q=0.9",
         }
+        if self._api_key:
+            self._api_headers["X-Goog-Api-Key"] = self._api_key
+        else:
+            self.logger.warning(
+                "Google Lens OCR API key is not configured. Set the api_key parameter "
+                "or BALLOONTRANS_GOOGLE_LENS_API_KEY if requests are rejected."
+            )
 
     def _prepare_protobuf_request(
         self, image_bytes: bytes, width: int, height: int

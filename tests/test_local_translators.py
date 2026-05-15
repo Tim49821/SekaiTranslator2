@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if APP_ROOT not in sys.path:
-    sys.path.append(APP_ROOT)
+    sys.path.insert(0, APP_ROOT)
 
 from scripts import setup_gemma4_runtime
 from modules.base import BaseModule, init_translator_registries
@@ -16,6 +16,12 @@ from modules.prepare_local_files import download_and_check_hf_model_files, shoul
 from modules.translators import TRANSLATORS
 from modules.translators import gemma4_worker
 from modules.translators.trans_gemma4 import Gemma4E4BTranslator, Qwen35NineBGGUFTranslator
+from modules.translators.trans_llm_api_json import (
+    LLM_PROVIDER_DEFAULT_MODELS,
+    LLM_PROVIDER_MODEL_OPTIONS,
+    GoogleLLMTranslator,
+    OpenAILLMTranslator,
+)
 from modules.translators.trans_nllb import NLLB200DistilledTranslator
 
 
@@ -215,6 +221,22 @@ class LocalTranslatorRegistrationTest(unittest.TestCase):
         self.assertIn("NLLB-200 distilled 1.3B", TRANSLATORS.module_dict)
         self.assertIn("Gemma 4 E4B-it", TRANSLATORS.module_dict)
         self.assertIn("Qwen3.5 9B GGUF", TRANSLATORS.module_dict)
+
+
+class LLMTranslatorCatalogTest(unittest.TestCase):
+    def test_fixed_provider_translators_use_central_model_catalog(self):
+        self.assertEqual(
+            OpenAILLMTranslator.params["model"]["options"],
+            LLM_PROVIDER_MODEL_OPTIONS["OpenAI"],
+        )
+        self.assertEqual(
+            OpenAILLMTranslator.params["model"]["value"],
+            LLM_PROVIDER_DEFAULT_MODELS["OpenAI"],
+        )
+        self.assertEqual(
+            GoogleLLMTranslator.params["model"]["options"],
+            LLM_PROVIDER_MODEL_OPTIONS["Google"],
+        )
 
 
 class BaseModuleLoadingTest(unittest.TestCase):

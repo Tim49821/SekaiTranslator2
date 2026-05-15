@@ -5,7 +5,6 @@ import os.path as osp
 import numpy as np
 from qtpy.QtCore import QThread, Signal, QObject, QLocale, QTimer
 from qtpy.QtWidgets import QFileDialog
-from sympy import true
 
 from .funcmaps import get_maskseg_method
 from utils.logger import logger as LOGGER
@@ -24,6 +23,7 @@ from utils import shared
 from utils.message import create_error_dialog, create_info_dialog
 from .custom_widget import ImgtransProgressMessageBox, ParamComboBox
 from .configpanel import ConfigPanel
+from .threading_utils import any_thread_running, stop_qthread
 from utils.proj_imgtrans import ProjImgTrans
 from utils.config import pcfg, RunStatus
 cfg_module = pcfg.module
@@ -77,7 +77,7 @@ class ModuleThread(QThread):
 
     def initImgtransPipeline(self, proj: ProjImgTrans):
         if self.isRunning():
-            self.terminate()
+            self.stopThread()
         self.imgtrans_proj = proj
         self.finished_counter = 0
         self.pipeline_pagekey_queue.clear()
@@ -85,10 +85,16 @@ class ModuleThread(QThread):
     def requestStop(self):
         self.stop_requested = True
 
+    def stopThread(self, timeout_ms: int = 3000) -> bool:
+        return stop_qthread(self, timeout_ms)
+
     def run(self):
-        if self.job is not None:
-            self.job()
-        self.job = None
+        try:
+            if self.job is not None:
+                self.job()
+        finally:
+            self.job = None
+            self.stop_requested = False
 
 
 class InpaintThread(ModuleThread):
@@ -124,11 +130,14 @@ class InpaintThread(ModuleThread):
                 'img_key': img_key,
                 'inpaint_rect': inpaint_rect
             }
-            self.finish_inpaint.emit(inpaint_dict)
+            if not self.stop_requested:
+                self.finish_inpaint.emit(inpaint_dict)
         except Exception as e:
-            create_error_dialog(e, self.tr('Inpainting Failed.'), 'InpaintFailed')
+            if not self.stop_requested:
+                create_error_dialog(e, self.tr('Inpainting Failed.'), 'InpaintFailed')
             self.inpainting = False
-            self.inpaint_failed.emit()
+            if not self.stop_requested:
+                self.inpaint_failed.emit()
         self.inpainting = False
 
 
@@ -302,13 +311,12 @@ class ImgtransThread(QThread):
         self.strict_stage_order = False
 
     def on_module_thread_stopped(self):
-        while True:
-            # might freeze UI
-            if self.translate_thread.isRunning() or self.inpaint_thread.isRunning() or self.ocr_thread.isRunning() or self.textdetect_thread.isRunning():
-                time.sleep(0.05)
-                continue
-            break
+        self.emit_stopped_when_idle()
 
+    def emit_stopped_when_idle(self):
+        if any_thread_running([self.translate_thread, self.inpaint_thread, self.ocr_thread, self.textdetect_thread]):
+            QTimer.singleShot(50, self.emit_stopped_when_idle)
+            return
         self.pipeline_stopped.emit()
 
     @property
@@ -344,6 +352,9 @@ class ImgtransThread(QThread):
         # 同时停止翻译线程
         if self.translate_thread.isRunning():
             self.translate_thread.requestStop()
+
+    def stopThread(self, timeout_ms: int = 3000) -> bool:
+        return stop_qthread(self, timeout_ms)
 
     def runBlktransPipeline(self, blk_list: List[TextBlock], tgt_img: np.ndarray, mode: int, blk_ids: List[int], tgt_mask):
         self.job = lambda : self._blktrans_pipeline(blk_list, tgt_img, mode, blk_ids, tgt_mask)
@@ -583,9 +594,11 @@ class ImgtransThread(QThread):
         return self.inpaint_counter == self.num_pages or not cfg_module.enable_inpaint
 
     def run(self):
-        if self.job is not None:
-            self.job()
-        self.job = None
+        try:
+            if self.job is not None:
+                self.job()
+        finally:
+            self.job = None
 
     def recent_finished_index(self, ref_counter: int) -> int:
         if cfg_module.enable_detect:
@@ -721,8 +734,8 @@ class ModuleManager(QObject):
     def translatePage(self, run_target: bool, page_key: str):
         if not run_target:
             if self.translate_thread.isRunning():
-                LOGGER.warning('Terminating a running translation thread.')
-                self.translate_thread.terminate()
+                LOGGER.warning('Requesting the running translation thread to stop.')
+                self.translate_thread.stopThread()
             return
         self.translate_thread.translatePage(self.imgtrans_proj.pages, page_key)
 
@@ -736,14 +749,18 @@ class ModuleManager(QObject):
         self.inpaint_thread.inpaint(img, mask, img_key, inpaint_rect)
 
     def terminateRunningThread(self):
+        all_stopped = True
+        if hasattr(self, 'imgtrans_thread') and self.imgtrans_thread.isRunning():
+            all_stopped = self.imgtrans_thread.stopThread() and all_stopped
         if self.textdetect_thread.isRunning():
-            self.textdetect_thread.quit()
+            all_stopped = self.textdetect_thread.stopThread() and all_stopped
         if self.ocr_thread.isRunning():
-            self.ocr_thread.quit()
+            all_stopped = self.ocr_thread.stopThread() and all_stopped
         if self.inpaint_thread.isRunning():
-            self.inpaint_thread.quit()
+            all_stopped = self.inpaint_thread.stopThread() and all_stopped
         if self.translate_thread.isRunning():
-            self.translate_thread.quit()
+            all_stopped = self.translate_thread.stopThread() and all_stopped
+        return all_stopped
 
     def check_inpaint_th_finished(self):
         if self.inpaint_thread.isRunning():
@@ -758,7 +775,10 @@ class ModuleManager(QObject):
             self.progress_msgbox.hide()
             return
         self.last_finished_index = -1
-        self.terminateRunningThread()
+        if not self.terminateRunningThread():
+            LOGGER.warning('Previous pipeline is still stopping; skip starting a new pipeline.')
+            self.progress_msgbox.hide()
+            return
         
         if cfg_module.all_stages_disabled() and self.imgtrans_proj is not None and self.imgtrans_proj.num_pages > 0:
             for ii in range(self.imgtrans_proj.num_pages):
@@ -780,7 +800,10 @@ class ModuleManager(QObject):
         self.imgtrans_thread.requestStop()
 
     def runBlktransPipeline(self, blk_list: List[TextBlock], tgt_img: np.ndarray, mode: int, blk_ids: List[int], tgt_mask):
-        self.terminateRunningThread()
+        if not self.terminateRunningThread():
+            LOGGER.warning('Previous pipeline is still stopping; skip starting a block pipeline.')
+            self.progress_msgbox.hide()
+            return
         self.progress_msgbox.hide_all_bars()
         if mode >= 0 and mode < 3:
             self.progress_msgbox.ocr_bar.show()
@@ -890,8 +913,9 @@ class ModuleManager(QObject):
         if translator is None:
             translator = cfg_module.translator
         if self.translate_thread.isRunning():
-            LOGGER.warning('Terminating a running translation thread.')
-            self.translate_thread.terminate()
+            LOGGER.warning('Requesting the running translation thread to stop before changing translator.')
+            if not self.translate_thread.stopThread():
+                return
         self.translate_thread.setTranslator(translator)
 
     def setInpainter(self, inpainter: str = None):
@@ -914,16 +938,18 @@ class ModuleManager(QObject):
         if textdetector is None:
             textdetector = cfg_module.textdetector
         if self.textdetect_thread.isRunning():
-            LOGGER.warning('Terminating a running text detection thread.')
-            self.textdetect_thread.terminate()
+            LOGGER.warning('Requesting the running text detection thread to stop before changing detector.')
+            if not self.textdetect_thread.stopThread():
+                return
         self.textdetect_thread.setTextDetector(textdetector)
 
     def setOCR(self, ocr: str = None):
         if ocr is None:
             ocr = cfg_module.ocr
         if self.ocr_thread.isRunning():
-            LOGGER.warning('Terminating a running OCR thread.')
-            self.ocr_thread.terminate()
+            LOGGER.warning('Requesting the running OCR thread to stop before changing OCR.')
+            if not self.ocr_thread.stopThread():
+                return
         self.ocr_thread.setOCR(ocr)
 
     def on_finish_translate_page(self, page_key: str):
@@ -984,7 +1010,7 @@ class ModuleManager(QObject):
         if not self.imgtrans_thread.isRunning():
             if self.inpaint_thread.inpainting:
                 self.run_canvas_inpaint = False
-                self.inpaint_thread.terminate()
+                self.inpaint_thread.requestStop()
 
     def on_inpainter_checker_changed(self, is_checked: bool):
         cfg_module.check_need_inpaint = is_checked

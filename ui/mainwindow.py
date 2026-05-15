@@ -4,7 +4,6 @@ from typing import List, Union
 from pathlib import Path
 import subprocess
 from functools import partial
-import time
 import cv2
 
 from tqdm import tqdm
@@ -26,6 +25,7 @@ from utils.proj_imgtrans import ProjImgTrans
 from .canvas import Canvas
 from .configpanel import ConfigPanel
 from .module_manager import ModuleManager
+from .threading_utils import wait_if_running
 from .textedit_area import SourceTextEdit, SelectTextMiniMenu, TransTextEdit
 from .drawingpanel import DrawingPanel
 from .scenetext_manager import SceneTextManager, TextPanel, PasteSrcItemsCommand
@@ -668,10 +668,7 @@ class MainWindow(mainwindow_cls):
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self.imgtrans_proj.is_empty:
             self.conditional_save(keep_exist_as_backup=True)
-        while True:
-            if not self.imsave_thread.isRunning():
-                break
-            time.sleep(0.1)
+        wait_if_running(self.imsave_thread)
         self.st_manager.hovering_transwidget = None
         self.st_manager.blockSignals(True)
         self.canvas.prepareClose()
@@ -1843,12 +1840,9 @@ class MainWindow(mainwindow_cls):
     def on_reveal_file(self):
         current_img_path = self.imgtrans_proj.current_img_path()
         if sys.platform == 'win32':
-            # qprocess seems to fuck up with "\""
-            p = "\""+str(Path(current_img_path))+"\""
-            subprocess.Popen("explorer.exe /select,"+p, shell=True)
+            subprocess.Popen(["explorer.exe", f"/select,{str(Path(current_img_path))}"])
         elif sys.platform == 'darwin':
-            p = "\""+current_img_path+"\""
-            subprocess.Popen("open -R "+p, shell=True)
+            subprocess.Popen(["open", "-R", current_img_path])
 
     def on_set_gsearch_widget(self):
         setup = self.leftBar.globalSearchChecker.isChecked()
@@ -1951,7 +1945,7 @@ class MainWindow(mainwindow_cls):
         self.canvas.push_undo_command(PasteSrcItemsCommand(src_widget_list, text_list))
     
     def run_batch(self, exec_dirs: Union[List, str], **kwargs):
-        if not isinstance(exec_dirs, List):
+        if not isinstance(exec_dirs, list):
             exec_dirs = exec_dirs.split(',')
         valid_dirs = []
         for d in exec_dirs:
@@ -1964,8 +1958,7 @@ class MainWindow(mainwindow_cls):
 
     def run_next_dir(self):
         if len(self.exec_dirs) == 0:
-            while self.imsave_thread.isRunning():
-                time.sleep(0.1)
+            wait_if_running(self.imsave_thread)
             if shared.HEADLESS_CONTINUOUS:
                 LOGGER.info(f'finished translating all dirs, please enter next dirs to translate (separated by comma). enter "exit" to quit app.')
                 new_exec_dirs = input()

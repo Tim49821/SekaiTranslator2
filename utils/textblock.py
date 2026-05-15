@@ -274,7 +274,7 @@ class TextBlock:
         return np.array(self.lines, dtype=dtype)
 
     def set_lines_by_xywh(self, xywh: np.ndarray, angle=0, x_range=None, y_range=None, adjust_bbox=False):
-        if isinstance(xywh, List):
+        if isinstance(xywh, list):
             xywh = np.array(xywh)
         lines = xywh2xyxypoly(np.array([xywh]))
         if angle != 0:

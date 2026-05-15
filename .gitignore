@@ -1,8 +1,11 @@
 .DS_Store
 .venv/
 logs/
+.btrans_cache/
 __pycache__/
 */__pycache__/
 *.pyc
+config/config.local.json
+config/config.local.json.tmp
 data/models/
 data/libs/

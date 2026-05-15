@@ -5,9 +5,9 @@ import traceback
 import re
 import shutil
 import os.path as osp
-from typing import List, Union, Optional, Any
+from typing import List, Union, Optional
 import hashlib
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass
 import tempfile
 import uuid
 from urllib.request import Request, urlopen
@@ -24,6 +24,7 @@ shutil.register_archive_format('7zip', pack_7zarchive, description='7zip archive
 shutil.register_unpack_format('7zip', ['.7z'], unpack_7zarchive)
 
 READ_DATA_CHUNK = 128 * 1024
+INSECURE_DOWNLOAD_ENV = 'BALLOONTRANS_ALLOW_INSECURE_DOWNLOADS'
 
 def calculate_sha256(filename):
     hash_sha256 = hashlib.sha256()
@@ -69,13 +70,16 @@ def download_file_from_google_drive(file_id, save_path):
     params = {'id': file_id, 'confirm': 't'}    # https://stackoverflow.com/a/73893665/17671327
 
     response = session.get(URL, params=params, stream=True)
+    response.raise_for_status()
     token = get_confirm_token(response)
     if token:
         params['confirm'] = token
         response = session.get(URL, params=params, stream=True)
+        response.raise_for_status()
 
     # get file size
     response_file_size = session.get(URL, params=params, stream=True, headers={'Range': 'bytes=0-2'})
+    response_file_size.raise_for_status()
     if 'Content-Range' in response_file_size.headers:
         file_size = int(response_file_size.headers['Content-Range'].split('/')[1])
     else:
@@ -92,6 +96,11 @@ def get_confirm_token(response):
 
 
 def save_response_content(response, destination, file_size=None, chunk_size=32768):
+    destination = os.path.expanduser(destination)
+    save_dir = osp.dirname(destination)
+    if save_dir and not osp.exists(save_dir):
+        os.makedirs(save_dir)
+
     if file_size is not None:
         pbar = tqdm(total=math.ceil(file_size / chunk_size), unit='chunk')
 
@@ -99,17 +108,35 @@ def save_response_content(response, destination, file_size=None, chunk_size=3276
     else:
         pbar = None
 
-    with open(destination, 'wb') as f:
-        downloaded_size = 0
-        for chunk in response.iter_content(chunk_size):
-            downloaded_size += chunk_size
-            if pbar is not None:
-                pbar.update(1)
-                pbar.set_description(f'Download {sizeof_fmt(downloaded_size)} / {readable_file_size}')
-            if chunk:  # filter out keep-alive new chunks
-                f.write(chunk)
+    tmp_dst = None
+    try:
+        tmp_dst = destination + "." + uuid.uuid4().hex + ".partial"
+        with open(tmp_dst, 'wb') as f:
+            downloaded_size = 0
+            for chunk in response.iter_content(chunk_size):
+                if chunk:  # filter out keep-alive new chunks
+                    downloaded_size += len(chunk)
+                    f.write(chunk)
+                    if pbar is not None:
+                        pbar.update(1)
+                        pbar.set_description(f'Download {sizeof_fmt(downloaded_size)} / {readable_file_size}')
+        shutil.move(tmp_dst, destination)
+    finally:
         if pbar is not None:
             pbar.close()
+        if tmp_dst and osp.exists(tmp_dst):
+            os.remove(tmp_dst)
+
+
+def _download_ssl_context():
+    allow_insecure = os.environ.get(INSECURE_DOWNLOAD_ENV, '').strip().lower() in {'1', 'true', 'yes'}
+    if allow_insecure:
+        LOGGER.warning(
+            f'TLS certificate verification is disabled because {INSECURE_DOWNLOAD_ENV} is set. '
+            'Unset it for normal verified downloads.'
+        )
+        return ssl._create_unverified_context()
+    return None
 
 def download_url_to_file(
     url: str,
@@ -136,12 +163,9 @@ def download_url_to_file(
         ... )
 
     """
-    original_ctx = ssl._create_default_https_context
-    ssl._create_default_https_context = ssl._create_unverified_context  # https://stackoverflow.com/questions/50236117/scraping-ssl-certificate-verify-failed-error-for-http-en-wikipedia-org
-
     file_size = None
     req = Request(url, headers={"User-Agent": "torch.hub"})
-    u = urlopen(req)
+    u = urlopen(req, context=_download_ssl_context())
     meta = u.info()
     if hasattr(meta, "getheaders"):
         content_length = meta.getheaders("Content-Length")
@@ -156,6 +180,10 @@ def download_url_to_file(
     # We deliberately do not use NamedTemporaryFile to avoid restrictive
     # file permissions being applied to the downloaded file.
     dst = os.path.expanduser(dst)
+    dst_dir = osp.dirname(dst)
+    if dst_dir and not osp.exists(dst_dir):
+        os.makedirs(dst_dir)
+    f = None
     for _ in range(tempfile.TMP_MAX):
         tmp_dst = dst + "." + uuid.uuid4().hex + ".partial"
         try:
@@ -186,7 +214,6 @@ def download_url_to_file(
                 pbar.update(len(buffer))
 
         f.close()
-        ssl._create_default_https_context = original_ctx
         if hash_prefix is not None:
             digest = sha256.hexdigest()  # type: ignore[possibly-undefined]
             if digest[: len(hash_prefix)] != hash_prefix:
@@ -195,8 +222,10 @@ def download_url_to_file(
                 )
         shutil.move(f.name, dst)
     finally:
-        f.close()
-        if os.path.exists(f.name):
+        u.close()
+        if f is not None and not f.closed:
+            f.close()
+        if f is not None and os.path.exists(f.name):
             os.remove(f.name)
 
 
@@ -309,16 +338,16 @@ def download_and_check_files(url: str,
         '''
         ensure they're lists with equal length
         '''
-        if not isinstance(files, List):
+        if not isinstance(files, list):
             files = [files]
-        if not isinstance(sha256_pre_calculated, List):
+        if not isinstance(sha256_pre_calculated, list):
             if sha256_pre_calculated is None:
                 sha256_pre_calculated = [None] * len(files)
             else:
                 sha256_pre_calculated = [sha256_pre_calculated]
         if save_files is None:
             save_files = files
-        elif not isinstance(save_files, List):
+        elif not isinstance(save_files, list):
             save_files = [save_files]
 
         assert len(files) == len(sha256_pre_calculated) == len(save_files)

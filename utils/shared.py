@@ -13,7 +13,11 @@ LIBS_PATH = osp.join(PROGRAM_PATH, 'data/libs')
 
 STYLESHEET_PATH = osp.join(PROGRAM_PATH, 'config/stylesheet.css')
 THEME_PATH = osp.join(PROGRAM_PATH, 'config/themes.json')
-CONFIG_PATH = osp.join(PROGRAM_PATH, 'config/config.json')
+CONFIG_TEMPLATE_PATH = osp.join(PROGRAM_PATH, 'config/config.json')
+CONFIG_PATH = os.environ.get(
+    'BALLOONTRANS_CONFIG_PATH',
+    osp.join(PROGRAM_PATH, 'config/config.local.json'),
+)
 
 DEFAULT_TEXTSTYLE_DIR = osp.join(PROGRAM_PATH, 'config/textstyles')
 if not osp.exists(DEFAULT_TEXTSTYLE_DIR):

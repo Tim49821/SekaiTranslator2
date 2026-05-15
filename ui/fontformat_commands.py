@@ -36,7 +36,7 @@ def wrap_fntformat_input(values: str, blkitems: List[TextBlkItem], is_global: bo
     if is_global:
         blkitems = SW.canvas.selected_text_items()
     else:
-        if not isinstance(blkitems, List):
+        if not isinstance(blkitems, list):
             blkitems = [blkitems]
     values = [values] * len(blkitems)
     return blkitems, values

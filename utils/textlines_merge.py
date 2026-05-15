@@ -297,7 +297,7 @@ def sort_pnts(pts: np.ndarray):
     It is reliable enough for text lines but not for blocks.
     '''
 
-    if isinstance(pts, List):
+    if isinstance(pts, list):
         pts = np.array(pts)
     assert isinstance(pts, np.ndarray) and pts.shape == (4, 2)
     pairwise_vec = (pts[:, None] - pts[None]).reshape((16, -1))
@@ -568,5 +568,4 @@ def merge_bboxes_text_region(bboxes: List[Quadrilateral], width, height):
 
         # yield overall bbox and sorted indices
         yield txtlns, (fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b)
-
 

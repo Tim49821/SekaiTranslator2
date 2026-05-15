@@ -8,7 +8,7 @@ import numpy as np
 
 APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if APP_ROOT not in sys.path:
-    sys.path.append(APP_ROOT)
+    sys.path.insert(0, APP_ROOT)
 
 from qtpy.QtCore import QPointF, QSize, Qt
 from qtpy.QtGui import QColor, QImage, QPainter, QPen

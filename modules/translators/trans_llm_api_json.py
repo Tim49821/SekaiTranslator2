@@ -37,6 +37,35 @@ class TranslationResponse(BaseModel):
     )
 
 
+LLM_PROVIDER_MODEL_OPTIONS = {
+    "OpenAI": ["OAI: gpt-5.2", "OAI: gpt-5-mini", "OAI: gpt-5-nano"],
+    "Google": [
+        "GGL: gemini-3.1-pro-preview",
+        "GGL: gemini-3-flash-preview",
+        "GGL: gemini-3.1-flash-lite-preview",
+    ],
+    "Grok": ["XAI: grok-4", "XAI: grok-3", "XAI: grok-3-mini"],
+    "OpenRouter": ["LLMS: (override model field)"],
+    "LLM Studio": ["LLMS: (override model field)"],
+}
+
+LLM_PROVIDER_DEFAULT_MODELS = {
+    "OpenAI": "OAI: gpt-5.2",
+    "Google": "GGL: gemini-3.1-pro-preview",
+    "Grok": "XAI: grok-4",
+    "OpenRouter": "LLMS: (override model field)",
+    "LLM Studio": "LLMS: (override model field)",
+}
+
+LLM_PROVIDER_DESCRIPTIONS = {
+    "OpenAI": "OpenAI-backed LLM translator.",
+    "Google": "Google Gemini-compatible LLM translator.",
+    "Grok": "xAI Grok-backed LLM translator.",
+    "OpenRouter": "OpenRouter-backed LLM translator.",
+    "LLM Studio": "Local LLM Studio-compatible translator.",
+}
+
+
 class LLM_API_Translator(BaseTranslator):
     concate_text = False
     cht_require_convert = True
@@ -59,17 +88,12 @@ class LLM_API_Translator(BaseTranslator):
         "model": {
             "type": "selector",
             "options": [
-                "OAI: gpt-5.2",
-                "OAI: gpt-5-mini",
-                "OAI: gpt-5-nano",
-                "GGL: gemini-3.1-pro-preview",
-                "GGL: gemini-3-flash-preview",
-                "GGL: gemini-3.1-flash-lite-preview",
-                "XAI: grok-3",
-                "XAI: grok-3-mini",
-                "LLMS: (override model field)",
+                *LLM_PROVIDER_MODEL_OPTIONS["OpenAI"],
+                *LLM_PROVIDER_MODEL_OPTIONS["Google"],
+                *LLM_PROVIDER_MODEL_OPTIONS["Grok"],
+                *LLM_PROVIDER_MODEL_OPTIONS["OpenRouter"],
             ],
-            "value": "OAI: gpt-5.2",
+            "value": LLM_PROVIDER_DEFAULT_MODELS["OpenAI"],
             "description": "Select a model that supports JSON Mode for structured output.",
         },
         "override model": {
@@ -667,9 +691,9 @@ class _FixedProviderLLMTranslator(LLM_API_Translator):
 class OpenAILLMTranslator(_FixedProviderLLMTranslator):
     fixed_provider = "OpenAI"
     params = _build_fixed_provider_params(
-        "OpenAI-backed LLM translator.",
-        ["OAI: gpt-5.2", "OAI: gpt-5-mini", "OAI: gpt-5-nano"],
-        "OAI: gpt-5.2",
+        LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_PROVIDER_DEFAULT_MODELS[fixed_provider],
     )
 
 
@@ -677,13 +701,9 @@ class OpenAILLMTranslator(_FixedProviderLLMTranslator):
 class GoogleLLMTranslator(_FixedProviderLLMTranslator):
     fixed_provider = "Google"
     params = _build_fixed_provider_params(
-        "Google Gemini-compatible LLM translator.",
-        [
-            "GGL: gemini-3.1-pro-preview",
-            "GGL: gemini-3-flash-preview",
-            "GGL: gemini-3.1-flash-lite-preview",
-        ],
-        "GGL: gemini-3.1-pro-preview",
+        LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_PROVIDER_DEFAULT_MODELS[fixed_provider],
     )
 
 
@@ -691,9 +711,9 @@ class GoogleLLMTranslator(_FixedProviderLLMTranslator):
 class GrokLLMTranslator(_FixedProviderLLMTranslator):
     fixed_provider = "Grok"
     params = _build_fixed_provider_params(
-        "xAI Grok-backed LLM translator.",
-        ["XAI: grok-4", "XAI: grok-3", "XAI: grok-3-mini"],
-        "XAI: grok-4",
+        LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_PROVIDER_DEFAULT_MODELS[fixed_provider],
     )
 
 
@@ -701,9 +721,9 @@ class GrokLLMTranslator(_FixedProviderLLMTranslator):
 class OpenRouterLLMTranslator(_FixedProviderLLMTranslator):
     fixed_provider = "OpenRouter"
     params = _build_fixed_provider_params(
-        "OpenRouter-backed LLM translator.",
-        ["LLMS: (override model field)"],
-        "LLMS: (override model field)",
+        LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_PROVIDER_DEFAULT_MODELS[fixed_provider],
     )
 
 
@@ -711,7 +731,7 @@ class OpenRouterLLMTranslator(_FixedProviderLLMTranslator):
 class LLMStudioTranslator(_FixedProviderLLMTranslator):
     fixed_provider = "LLM Studio"
     params = _build_fixed_provider_params(
-        "Local LLM Studio-compatible translator.",
-        ["LLMS: (override model field)"],
-        "LLMS: (override model field)",
+        LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_PROVIDER_DEFAULT_MODELS[fixed_provider],
     )

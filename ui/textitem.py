@@ -274,7 +274,7 @@ class TextBlkItem(QGraphicsTextItem):
 
     def setRect(self, rect: Union[List, QRectF], padding=True, repaint=True) -> None:
         
-        if isinstance(rect, List):
+        if isinstance(rect, list):
             rect = QRectF(*rect)
         if padding:
             rect = self.padRect(rect)

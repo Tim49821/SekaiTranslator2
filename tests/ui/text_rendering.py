@@ -6,7 +6,8 @@ import numpy as np
 
 APP_ROOT = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
 
-sys.path.append(APP_ROOT)
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
 
 
 if __name__ == '__main__':
@@ -15,7 +16,7 @@ if __name__ == '__main__':
     os.environ['QT_API'] = 'pyqt6'
 
     from launch import main, args
-    from ui.config_proj import ProjImgTrans
+    from utils.proj_imgtrans import ProjImgTrans
     from utils.io_utils import imread, imwrite, json_dump_nested_obj
 
     test_dir = 'tests/test_dir/text_rendering'
