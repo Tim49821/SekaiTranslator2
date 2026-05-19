@@ -41,6 +41,11 @@ parser.add_argument("--debug", action='store_true')
 parser.add_argument("--requirements", default='requirements.txt')
 parser.add_argument("--headless", action='store_true', help='run without GUI')
 parser.add_argument("--headless_continuous", action='store_true', help='like headless but will not exit after finishing translation, prompts the user for new exec_dirs until user exits the program')
+parser.add_argument("--headless-server", action='store_true', help='run a headless HTTP API server for image translation')
+parser.add_argument("--host", default='127.0.0.1', help='host for --headless-server')
+parser.add_argument("--port", default=8000, type=int, help='port for --headless-server')
+parser.add_argument("--api-token", default=os.environ.get('BALLOONTRANS_API_TOKEN', ''), help='optional bearer token for headless server API requests')
+parser.add_argument("--job-result-ttl", default=3600, type=int, help='seconds to keep completed headless server job results')
 parser.add_argument("--exec_dirs", default='', help='translation queue (project directories) separated by comma')
 parser.add_argument("--ldpi", default=None, type=float, help='logical dots perinch')
 parser.add_argument("--export-translation-txt", action='store_true', help='save translation to txt file once RUN completed')
@@ -143,6 +148,7 @@ def commit_hash():
 
 BT = None
 APP = None
+SERVER = None
 
 def restart():
     global BT
@@ -214,11 +220,12 @@ def main():
     shared.DEFAULT_DISPLAY_LANG = QLocale.system().name().replace('en_CN', 'zh_CN')
     shared.HEADLESS = args.headless
     shared.HEADLESS_CONTINUOUS = args.headless_continuous
+    shared.HEADLESS_SERVER = args.headless_server
     shared.load_cache()
     program_config.load_config(args.config_path)
     config = program_config.pcfg
 
-    if args.headless or args.headless_continuous:
+    if args.headless or args.headless_continuous or args.headless_server:
         config.module.load_model_on_demand = True
         config.module.empty_runcache = False
 
@@ -249,7 +256,7 @@ def main():
     setup_logging(shared.LOGGING_PATH)
 
     app_args = sys.argv
-    if args.headless or args.headless_continuous:
+    if shared.is_headless():
         app_args = sys.argv + ['-platform', 'offscreen']
     app = QApplication(app_args)
     app.setApplicationName('BalloonsTranslator')
@@ -262,7 +269,7 @@ def main():
     init_module_registries()
     prepare_local_files_forall()
 
-    if not args.headless and not args.headless_continuous:
+    if not shared.is_headless():
         ps = QGuiApplication.primaryScreen()
         shared.LDPI = ps.logicalDotsPerInch()
         shared.SCREEN_W = ps.geometry().width()
@@ -286,7 +293,7 @@ def main():
             if fnt_idx >= 0:
                 shared.CUSTOM_FONTS.append(QFontDatabase.applicationFontFamilies(fnt_idx)[0])
 
-    if sys.platform == 'win32' and (args.headless or args.headless_continuous):
+    if sys.platform == 'win32' and shared.is_headless():
         # font database does not initialise on windows with qpa -offscreen:
         # whttps://github.com/dmMaze/BallonsTranslator/issues/519
         from qtpy.QtCore import QStandardPaths
@@ -318,11 +325,11 @@ def main():
 
     from ui.mainwindow import MainWindow
     ballontrans = MainWindow(app, config, open_dir=args.proj_dir, **vars(args))
-    global BT
+    global BT, SERVER
     BT = ballontrans
     BT.restart_signal.connect(restart)
 
-    if not args.headless and not args.headless_continuous:
+    if not shared.is_headless():
         if shared.SCREEN_W > 1707 and sys.platform == 'win32':   # higher than 2560 (1440p) / 1.5
             # https://github.com/dmMaze/BallonsTranslator/issues/220
             BT.comicTransSplitter.setHandleWidth(7)
@@ -330,6 +337,10 @@ def main():
         ballontrans.setWindowIcon(QIcon(shared.ICON_PATH))
         ballontrans.show()
         ballontrans.resetStyleSheet()
+
+    if args.headless_server:
+        from headless_server import start_headless_server
+        SERVER = start_headless_server(BT, args.host, args.port, args.api_token, args.job_result_ttl)
     sys.exit(app.exec())
 
 def is_amd_gpu():

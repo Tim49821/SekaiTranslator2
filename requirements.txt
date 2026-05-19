@@ -35,6 +35,9 @@ keyboard
 ordered-set
 opencc-python-reimplemented
 requests
+fastapi>=0.115,<0.136
+uvicorn>=0.30,<0.47
+python-multipart>=0.0.9
 ultralytics>=8.4.14
 beautifulsoup4
 colorama

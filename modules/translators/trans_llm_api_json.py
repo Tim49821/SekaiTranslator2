@@ -10,6 +10,7 @@ import openai
 from pydantic import BaseModel, Field, ValidationError
 
 from .base import BaseTranslator, register_translator
+from utils.env import get_llm_multiple_api_keys, get_llm_single_api_key
 
 
 class InvalidNumTranslations(Exception):
@@ -42,7 +43,7 @@ LLM_PROVIDER_MODEL_OPTIONS = {
     "Google": [
         "GGL: gemini-3.1-pro-preview",
         "GGL: gemini-3-flash-preview",
-        "GGL: gemini-3.1-flash-lite-preview",
+        "GGL: gemini-3.1-flash-lite",
     ],
     "Grok": ["XAI: grok-4", "XAI: grok-3", "XAI: grok-3-mini"],
     "OpenRouter": ["LLMS: (override model field)"],
@@ -78,12 +79,12 @@ class LLM_API_Translator(BaseTranslator):
         },
         "apikey": {
             "value": "",
-            "description": "Single API key to use if multiple keys are not provided.",
+            "description": "Single API key. Leave empty to use .env/environment variables for the selected provider.",
         },
         "multiple_keys": {
             "type": "editor",
             "value": "",
-            "description": "API keys separated by semicolons (;). Requests will rotate through these keys.",
+            "description": "API keys separated by semicolons (;). Leave empty to use .env/environment variables.",
         },
         "model": {
             "type": "selector",
@@ -244,11 +245,11 @@ class LLM_API_Translator(BaseTranslator):
 
     @property
     def apikey(self) -> str:
-        return self.get_param_value("apikey")
+        return self.get_param_value("apikey") or get_llm_single_api_key(self.provider)
 
     @property
     def multiple_keys_list(self) -> List[str]:
-        keys_str = self.get_param_value("multiple_keys")
+        keys_str = self.get_param_value("multiple_keys") or get_llm_multiple_api_keys(self.provider)
         if not isinstance(keys_str, str):
             return []
         return [

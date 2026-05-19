@@ -4,15 +4,47 @@ import base64
 import json
 import cv2
 import numpy as np
-from typing import List, Optional
+from copy import deepcopy
+from typing import Dict, List, Optional
 
 import openai
 import httpx
 
 from .base import register_OCR, OCRBase, TextBlock
+from utils.env import (
+    get_llm_multiple_api_keys,
+    get_llm_single_api_key,
+)
+from ..translators.trans_llm_api_json import (
+    LLM_PROVIDER_DEFAULT_MODELS,
+    LLM_PROVIDER_MODEL_OPTIONS,
+)
 
+LLM_OCR_PROVIDER_MODEL_OPTIONS = {
+    provider: list(models)
+    for provider, models in LLM_PROVIDER_MODEL_OPTIONS.items()
+}
+LLM_OCR_PROVIDER_MODEL_OPTIONS.update({
+    "Ollama": ["OLLAMA: (override model field)"],
+})
 
-@register_OCR("llm_ocr")
+LLM_OCR_PROVIDER_DEFAULT_MODELS = {
+    provider: model
+    for provider, model in LLM_PROVIDER_DEFAULT_MODELS.items()
+}
+LLM_OCR_PROVIDER_DEFAULT_MODELS.update({
+    "Ollama": "OLLAMA: (override model field)",
+})
+
+LLM_OCR_PROVIDER_DESCRIPTIONS = {
+    "OpenAI": "OpenAI-backed vision LLM OCR.",
+    "Google": "Google Gemini-compatible vision LLM OCR.",
+    "Grok": "xAI Grok-backed vision LLM OCR.",
+    "OpenRouter": "OpenRouter-backed vision LLM OCR.",
+    "LLM Studio": "Local LLM Studio-compatible vision LLM OCR.",
+    "Ollama": "Local Ollama-compatible vision LLM OCR.",
+}
+
 class LLM_OCR(OCRBase):
     lang_map = {
         "Auto Detect": None,
@@ -137,29 +169,32 @@ class LLM_OCR(OCRBase):
     }
 
     popular_models = [
-        "OAI: gpt-4o-mini",
-        "OAI: gpt-4-vision-preview",
-        "OAI: gpt-4o",
-        "OAI: gpt-4",
-        "GGL: gemini-1.5-pro-latest",
-        "GGL: gemini-1.5-flash-latest",
+        model
+        for provider in ("OpenAI", "Google")
+        for model in LLM_OCR_PROVIDER_MODEL_OPTIONS[provider]
     ]
 
     params = {
         "provider": {
             "type": "selector",
-            "options": ["OpenAI", "Google", "OpenRouter", "Ollama"],
+            "options": list(LLM_OCR_PROVIDER_MODEL_OPTIONS.keys()),
             "value": "OpenAI",
             "description": "Select the LLM provider.",
         },
         "api_key": {
             "value": "",
-            "description": "API key to use if multiple keys are not provided.",
+            "description": (
+                "API key. Leave empty to use .env/environment variables "
+                "for the selected provider."
+            ),
         },
         "multiple_keys": {
             "type": "editor",
             "value": "",
-            "description": "API keys separated by semicolons (;). Requests will rotate.",
+            "description": (
+                "API keys separated by semicolons (;). Leave empty to use "
+                ".env/environment variables."
+            ),
         },
         "endpoint": {
             "value": "",
@@ -167,10 +202,12 @@ class LLM_OCR(OCRBase):
         },
         "model": {
             "type": "selector",
-            "options": popular_models + [
-                "OLLAMA: (override model field)"
+            "options": [
+                model
+                for models in LLM_OCR_PROVIDER_MODEL_OPTIONS.values()
+                for model in models
             ],
-            "value": "OAI: gpt-4o-mini",
+            "value": LLM_OCR_PROVIDER_DEFAULT_MODELS["OpenAI"],
             "description": "Select the model to use.",
         },
         "override_model": {
@@ -234,6 +271,8 @@ class LLM_OCR(OCRBase):
                 endpoint = "https://generativelanguage.googleapis.com/v1beta/openai"
             elif provider == "OpenRouter":
                 endpoint = "https://openrouter.ai/api/v1"
+            elif provider == "Grok":
+                endpoint = "https://api.x.ai/v1"
             elif provider == "Ollama":
                 endpoint = "http://localhost:11434/v1"
 
@@ -265,11 +304,17 @@ class LLM_OCR(OCRBase):
 
     @property
     def api_key(self) -> str:
-        return self.get_param_value("api_key")
+        return self.get_param_value("api_key") or get_llm_single_api_key(
+            self.provider,
+            for_ocr=True,
+        )
 
     @property
     def multiple_keys_list(self) -> List[str]:
-        keys_str = self.get_param_value("multiple_keys")
+        keys_str = self.get_param_value("multiple_keys") or get_llm_multiple_api_keys(
+            self.provider,
+            for_ocr=True,
+        )
         if not isinstance(keys_str, str):
             return []
         return [
@@ -411,6 +456,9 @@ class LLM_OCR(OCRBase):
             else:
                 return "[ERROR: No available API key]"
 
+        if self.provider == "LLM Studio" and not self.endpoint:
+            return "[ERROR: LLM Studio endpoint is required]"
+
         # Re-initialize client if key is different from the last one used
         if not self.client or self.client.api_key != api_key_to_use:
             self._initialize_client(api_key_to_use)
@@ -425,7 +473,7 @@ class LLM_OCR(OCRBase):
                 "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"},
             }
 
-            if self.provider in ["OpenAI", "Google", "OpenRouter"]:
+            if self.provider in ["OpenAI", "Google", "Grok", "OpenRouter"]:
                 detail_setting = self.detail_level
                 if detail_setting in ["low", "high"]:
                     image_content_part["image_url"]["detail"] = detail_setting
@@ -494,4 +542,85 @@ class LLM_OCR(OCRBase):
             self.request_count_minute = 0
             self.minute_start_time = time.time()
             self.last_request_time = 0
-            
+
+
+def _build_fixed_provider_params(
+    description: str,
+    model_options: List[str],
+    default_model: str,
+) -> Dict:
+    params = deepcopy(LLM_OCR.params)
+    params.pop("provider", None)
+    params["model"]["options"] = model_options
+    params["model"]["value"] = default_model
+    params["description"] = description
+    return params
+
+
+class _FixedProviderLLMOCR(LLM_OCR):
+    fixed_provider: str = ""
+    params: Dict = {}
+
+    @property
+    def provider(self) -> str:
+        return self.fixed_provider
+
+
+@register_OCR("LLM OCR OpenAI")
+class OpenAILLMOCR(_FixedProviderLLMOCR):
+    fixed_provider = "OpenAI"
+    params = _build_fixed_provider_params(
+        LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_DEFAULT_MODELS[fixed_provider],
+    )
+
+
+@register_OCR("LLM OCR Google")
+class GoogleLLMOCR(_FixedProviderLLMOCR):
+    fixed_provider = "Google"
+    params = _build_fixed_provider_params(
+        LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_DEFAULT_MODELS[fixed_provider],
+    )
+
+
+@register_OCR("LLM OCR Grok")
+class GrokLLMOCR(_FixedProviderLLMOCR):
+    fixed_provider = "Grok"
+    params = _build_fixed_provider_params(
+        LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_DEFAULT_MODELS[fixed_provider],
+    )
+
+
+@register_OCR("LLM OCR OpenRouter")
+class OpenRouterLLMOCR(_FixedProviderLLMOCR):
+    fixed_provider = "OpenRouter"
+    params = _build_fixed_provider_params(
+        LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_DEFAULT_MODELS[fixed_provider],
+    )
+
+
+@register_OCR("LLM OCR Studio")
+class LLMStudioOCR(_FixedProviderLLMOCR):
+    fixed_provider = "LLM Studio"
+    params = _build_fixed_provider_params(
+        LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_DEFAULT_MODELS[fixed_provider],
+    )
+
+
+@register_OCR("LLM OCR Ollama")
+class OllamaLLMOCR(_FixedProviderLLMOCR):
+    fixed_provider = "Ollama"
+    params = _build_fixed_provider_params(
+        LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_MODEL_OPTIONS[fixed_provider],
+        LLM_OCR_PROVIDER_DEFAULT_MODELS[fixed_provider],
+    )

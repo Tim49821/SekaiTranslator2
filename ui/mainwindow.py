@@ -58,7 +58,7 @@ class PageListView(QListWidget):
 
         return super().contextMenuEvent(e)
 
-mainwindow_cls = Widget if (shared.HEADLESS or shared.HEADLESS_CONTINUOUS) else FramelessWindow
+mainwindow_cls = Widget if shared.is_headless() else FramelessWindow
 class MainWindow(mainwindow_cls):
 
     imgtrans_proj: ProjImgTrans = ProjImgTrans()
@@ -97,7 +97,7 @@ class MainWindow(mainwindow_cls):
 
         if open_dir != '' and osp.exists(open_dir):
             self.OpenProj(open_dir)
-        elif pcfg.open_recent_on_startup:
+        elif pcfg.open_recent_on_startup and not shared.HEADLESS_SERVER:
             if len(self.leftBar.recent_proj_list) > 0:
                 proj_dir = self.leftBar.recent_proj_list[0]
                 if osp.exists(proj_dir):
@@ -106,7 +106,7 @@ class MainWindow(mainwindow_cls):
         if shared.HEADLESS or shared.HEADLESS_CONTINUOUS:
             self.run_batch(**exec_args)
 
-        if shared.ON_MACOS:
+        if shared.ON_MACOS and not shared.is_headless():
             # https://bugreports.qt.io/browse/QTBUG-133215
             self.hideSystemTitleBar()
             self.showMaximized()
@@ -469,7 +469,7 @@ class MainWindow(mainwindow_cls):
         else:
             self.openJsonProj(proj_path)
         
-        if pcfg.let_textstyle_indep_flag and not (shared.HEADLESS or shared.HEADLESS_CONTINUOUS):
+        if pcfg.let_textstyle_indep_flag and not shared.is_headless():
             self.load_textstyle_from_proj_dir(from_proj=True)
 
     def load_textstyle_from_proj_dir(self, from_proj=False):
@@ -666,6 +666,9 @@ class MainWindow(mainwindow_cls):
         save_config()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if shared.HEADLESS_SERVER:
+            wait_if_running(self.imsave_thread)
+            return super().closeEvent(event)
         if not self.imgtrans_proj.is_empty:
             self.conditional_save(keep_exist_as_backup=True)
         wait_if_running(self.imsave_thread)

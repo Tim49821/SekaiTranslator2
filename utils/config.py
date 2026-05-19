@@ -8,6 +8,64 @@ from .fontformat import FontFormat
 from .structures import List, Dict, Config, field, nested_dataclass
 from .logger import logger as LOGGER
 from .io_utils import json_dump_nested_obj, np, serialize_np
+from .env import load_dotenv, persist_llm_api_keys_from_config, sanitize_llm_api_keys
+
+LLM_MODEL_VALUE_ALIASES = {
+    'GGL: gemini-3.1-flash-lite-preview': 'GGL: gemini-3.1-flash-lite',
+}
+
+LLM_OCR_LEGACY_MODEL_REPLACEMENTS = {
+    'LLM OCR OpenAI': {
+        'OAI: gpt-4o-mini': 'OAI: gpt-5.2',
+        'OAI: gpt-4o': 'OAI: gpt-5.2',
+        'OAI: gpt-4-vision-preview': 'OAI: gpt-5.2',
+        'OAI: gpt-4': 'OAI: gpt-5.2',
+    },
+    'LLM OCR Google': {
+        'GGL: gemini-1.5-pro-latest': 'GGL: gemini-3.1-pro-preview',
+        'GGL: gemini-1.5-flash-latest': 'GGL: gemini-3.1-pro-preview',
+    },
+}
+
+
+def _get_raw_param_value(params: dict, key: str):
+    value = params.get(key)
+    if isinstance(value, dict):
+        return value.get('value')
+    return value
+
+
+def _set_raw_param_value(params: dict, key: str, value):
+    if key not in params:
+        return
+    current = params[key]
+    if isinstance(current, dict):
+        current['value'] = value
+    else:
+        params[key] = value
+
+
+def _replace_param_value_aliases(params: dict):
+    for key in ('model', 'override model', 'override_model'):
+        value = _get_raw_param_value(params, key)
+        if value in LLM_MODEL_VALUE_ALIASES:
+            _set_raw_param_value(params, key, LLM_MODEL_VALUE_ALIASES[value])
+
+
+def _migrate_llm_model_names(module_cfg: dict):
+    for section_name in ('translator_params', 'ocr_params'):
+        for params in module_cfg.get(section_name, {}).values():
+            if isinstance(params, dict):
+                _replace_param_value_aliases(params)
+
+    for module_name, params in module_cfg.get('ocr_params', {}).items():
+        if not isinstance(params, dict):
+            continue
+        model_value = _get_raw_param_value(params, 'model')
+        model_replacements = LLM_OCR_LEGACY_MODEL_REPLACEMENTS.get(module_name, {})
+        if model_value in model_replacements:
+            _set_raw_param_value(params, 'model', model_replacements[model_value])
+
 
 class RunStatus:
     FIN_DET = 1
@@ -70,7 +128,7 @@ class ModuleConfig(Config):
         params.textdetector_params = self.get_params('textdetector', for_saving=True)
         params.translator_params = self.get_params('translator', for_saving=True)
         if to_dict:
-            return params.__dict__
+            return sanitize_llm_api_keys(params.__dict__)
         return params
     
     def stage_enabled(self, idx: int):
@@ -220,6 +278,34 @@ class ProgramConfig(Config):
                 if module_cfg.get('translator') == 'LLM_API_Translator':
                     module_cfg['translator'] = llm_repl_pairs.get(provider_value, 'LLM OpenAI')
 
+            ocr_params = module_cfg.get('ocr_params', {})
+            if 'llm_ocr' in ocr_params:
+                old_llm_ocr_params = ocr_params.pop('llm_ocr')
+                provider_value = None
+                if isinstance(old_llm_ocr_params, dict):
+                    provider_cfg = old_llm_ocr_params.get('provider')
+                    if isinstance(provider_cfg, dict):
+                        provider_value = provider_cfg.get('value')
+                    elif isinstance(provider_cfg, str):
+                        provider_value = provider_cfg
+
+                llm_ocr_repl_pairs = {
+                    'OpenAI': 'LLM OCR OpenAI',
+                    'Google': 'LLM OCR Google',
+                    'Grok': 'LLM OCR Grok',
+                    'OpenRouter': 'LLM OCR OpenRouter',
+                    'LLM Studio': 'LLM OCR Studio',
+                    'Ollama': 'LLM OCR Ollama',
+                }
+                new_llm_ocr = llm_ocr_repl_pairs.get(provider_value, 'LLM OCR OpenAI')
+                if isinstance(old_llm_ocr_params, dict):
+                    old_llm_ocr_params.pop('provider', None)
+                ocr_params[new_llm_ocr] = old_llm_ocr_params
+                if module_cfg.get('ocr') == 'llm_ocr':
+                    module_cfg['ocr'] = new_llm_ocr
+
+            _migrate_llm_model_names(module_cfg)
+
             repl_pairs = {'baidu': 'Baidu', 'caiyun': 'Caiyun', 'chatgpt': 'ChatGPT', 'Deepl': 'DeepL', 'papago': 'Papago'}
             for k, i in repl_pairs.items():
                 if k in trans_params:
@@ -283,6 +369,8 @@ def load_textstyle_from(p: str, raise_exception = False):
     pcfg.text_styles_path = p
 
 def load_config(config_path: str = shared.CONFIG_PATH):
+    load_dotenv()
+
     explicit_config_path = config_path != shared.CONFIG_PATH
     if explicit_config_path:
         shared.CONFIG_PATH = config_path
@@ -311,6 +399,11 @@ def load_config(config_path: str = shared.CONFIG_PATH):
         config = ProgramConfig()
     
     global pcfg
+    try:
+        if persist_llm_api_keys_from_config(config.module):
+            LOGGER.info('LLM API keys from config were copied to .env and will be omitted from future config saves.')
+    except Exception as e:
+        LOGGER.warning(f'Failed to copy LLM API keys to .env: {e}')
     pcfg.merge(config)
 
     p = pcfg.text_styles_path
@@ -339,6 +432,10 @@ def json_dump_program_config(obj, **kwargs):
 def save_config():
     global pcfg
     try:
+        try:
+            persist_llm_api_keys_from_config(pcfg.module)
+        except Exception as e:
+            LOGGER.warning(f'Failed to copy LLM API keys to .env: {e}')
         config_dir = osp.dirname(shared.CONFIG_PATH)
         if config_dir and not osp.exists(config_dir):
             os.makedirs(config_dir)

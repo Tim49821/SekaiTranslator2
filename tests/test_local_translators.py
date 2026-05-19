@@ -238,6 +238,16 @@ class LLMTranslatorCatalogTest(unittest.TestCase):
             LLM_PROVIDER_MODEL_OPTIONS["Google"],
         )
 
+    def test_fixed_provider_translator_uses_env_api_key_when_param_is_empty(self):
+        with patch.dict(os.environ, {"BALLOONTRANS_LLM_OPENAI_API_KEY": "openai-project-key"}, clear=True):
+            translator = OpenAILLMTranslator(
+                "日本語",
+                "한국어",
+                raise_unsupported_lang=False,
+                **{"apikey": ""},
+            )
+            self.assertEqual(translator.apikey, "openai-project-key")
+
 
 class BaseModuleLoadingTest(unittest.TestCase):
     def test_model_loading_lock_is_released_when_load_fails(self):

@@ -103,8 +103,12 @@ ON_MACOS = sys.platform == 'darwin'
 ON_WINDOWS = sys.platform == 'win32'
 HEADLESS = False
 HEADLESS_CONTINUOUS = False
+HEADLESS_SERVER = False
 DEBUG = False
 args = None
+
+def is_headless():
+    return HEADLESS or HEADLESS_CONTINUOUS or HEADLESS_SERVER
 
 FUZZY_MATCH_IMAGE_NAME = False
 
