@@ -1,6 +1,6 @@
 # Ballon Translator: Translation Modules
 
-*   Current codebase translators include Google, Papago, NLLB-200 distilled 1.3B, Gemma 4 E4B-it, Qwen3.5 9B GGUF, and OpenAI-compatible LLM providers.
+*   Current codebase translators include Google, Papago, Gemma 4 E4B-it, and OpenAI-compatible LLM providers.
 
 [**Table of Contents**](#table-of-contents)
 - [Ballon Translator: Translation Modules](#ballon-translator-translation-modules)
@@ -10,7 +10,6 @@
   - [Other Translators](#other-translators)
     - [Google](#google)
     - [Papago](#papago)
-    - [NLLB-200 Distilled 1.3B](#nllb-200-distilled-13b)
     - [Utility Translators](#utility-translators)
   - [Contributing to the Project](#contributing-to-the-project)
 
@@ -64,10 +63,6 @@ These modules run a local `llama-cpp-python` worker subprocess and release model
     *   Model repo: `unsloth/gemma-4-E4B-it-GGUF`
     *   Supported quantizations: `Q4_K_M`, `Q6_K_M`
     *   Setup helper: `python scripts/setup_gemma4_runtime.py --model gemma4 --download-model`
-*   **Qwen3.5 9B GGUF**
-    *   Model repo: `unsloth/Qwen3.5-9B-GGUF`
-    *   Supported quantization: `Q4_K_M`
-    *   Setup helper: `python scripts/setup_gemma4_runtime.py --model qwen3.5 --download-model`
 
 **Settings Fields:**
 
@@ -97,16 +92,6 @@ These modules run a local `llama-cpp-python` worker subprocess and release model
 **Settings Fields:**
 
 *   **delay:** Delay in seconds between requests to the translation service. Used to control the frequency of requests. A value of `0.0` is usually sufficient.
-
-### NLLB-200 Distilled 1.3B
-
-**Settings Fields:**
-
-*   **device:** Runtime device such as `cpu`, `cuda`, `mps`, or `xpu`, depending on what PyTorch reports as available.
-*   **precision:** Model precision. `auto` is the default.
-*   **low vram mode:** Unloads other models before translation when needed.
-*   **batch size:** Number of text cells translated per batch.
-*   **max input tokens / max new tokens:** Token budget controls for each text cell.
 
 ### Utility Translators
 

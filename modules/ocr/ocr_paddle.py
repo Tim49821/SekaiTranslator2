@@ -119,6 +119,7 @@ if PADDLE_OCR_AVAILABLE:
             "Goan Konkani": "gom",
         }
 
+        _load_model_keys = {"model"}
         _paddleocr_api_style = "new"
 
         params = {
@@ -187,7 +188,6 @@ if PADDLE_OCR_AVAILABLE:
             self.output_format = self.params["output_format"]["value"]
             self.model = None
             self._setup_logging()
-            self._load_model()
 
         def _setup_logging(self):
             if self.debug_mode:
@@ -245,6 +245,146 @@ if PADDLE_OCR_AVAILABLE:
                     result = list(result)
                 return result
             return self.model.ocr(img, det=True, rec=True, cls=self.use_angle_cls)
+
+        def uses_internal_text_detector(self) -> bool:
+            return self.ocr_version == "PP-OCRv5"
+
+        def _result_items(self, result):
+            if result is None:
+                return []
+
+            if hasattr(result, "json"):
+                try:
+                    data = result.json
+                    if callable(data):
+                        data = data()
+                    return self._result_items(data)
+                except Exception:
+                    return []
+
+            if isinstance(result, dict):
+                if "res" in result:
+                    return self._result_items(result["res"])
+                if "ocrResults" in result:
+                    items = []
+                    for item in result["ocrResults"]:
+                        items.extend(self._result_items(item))
+                    return items
+                return [result]
+
+            if isinstance(result, (list, tuple)):
+                items = []
+                for item in result:
+                    items.extend(self._result_items(item))
+                return items
+
+            return []
+
+        def _get_indexed_result_value(self, values, index):
+            if values is None:
+                return None
+            try:
+                if len(values) <= index:
+                    return None
+                return values[index]
+            except TypeError:
+                return None
+
+        def _poly_from_result(self, polys, boxes, index):
+            poly = self._get_indexed_result_value(polys, index)
+            if poly is not None:
+                poly = np.asarray(poly, dtype=np.float32)
+                if poly.size == 8:
+                    return poly.reshape(4, 2)
+                if poly.shape == (4, 2):
+                    return poly
+
+            box = self._get_indexed_result_value(boxes, index)
+            if box is None:
+                return None
+            box = np.asarray(box, dtype=np.float32).reshape(-1)
+            if box.size < 4:
+                return None
+            x1, y1, x2, y2 = box[:4]
+            return np.array(
+                [[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32
+            )
+
+        def _textblock_from_ocr_poly(self, poly: np.ndarray, text: str) -> TextBlock:
+            poly = np.round(poly).astype(np.int64)
+            x1, y1 = poly[:, 0].min(), poly[:, 1].min()
+            x2, y2 = poly[:, 0].max(), poly[:, 1].max()
+            width = max(
+                float(np.linalg.norm(poly[1] - poly[0])),
+                float(np.linalg.norm(poly[2] - poly[3])),
+            )
+            height = max(
+                float(np.linalg.norm(poly[3] - poly[0])),
+                float(np.linalg.norm(poly[2] - poly[1])),
+            )
+            src_is_vertical = height > width * 1.2
+            font_size = max(height if not src_is_vertical else width, 1.0)
+            language = "ja" if self.language == "Japanese" else "unknown"
+            blk = TextBlock(
+                xyxy=[int(x1), int(y1), int(x2), int(y2)],
+                lines=[poly.tolist()],
+                language=language,
+                text=text,
+                src_is_vertical=src_is_vertical,
+                _detected_font_size=font_size,
+                det_model="paddle_ocr",
+            )
+            blk.vertical = src_is_vertical
+            return blk
+
+        def _extract_textblocks(self, result) -> List[TextBlock]:
+            blk_list = []
+            for item in self._result_items(result):
+                rec_texts = item.get("rec_texts")
+                if rec_texts is None or len(rec_texts) == 0:
+                    continue
+
+                rec_scores = item.get("rec_scores")
+                rec_polys = item.get("rec_polys")
+                if rec_polys is None:
+                    rec_polys = item.get("dt_polys")
+                rec_boxes = item.get("rec_boxes")
+
+                for idx, raw_text in enumerate(rec_texts):
+                    if raw_text is None:
+                        continue
+                    score = self._get_indexed_result_value(rec_scores, idx)
+                    if score is not None and float(score) < self.drop_score:
+                        continue
+                    poly = self._poly_from_result(rec_polys, rec_boxes, idx)
+                    if poly is None:
+                        continue
+                    text = self._process_texts([str(raw_text)])
+                    if not text:
+                        continue
+                    blk_list.append(self._textblock_from_ocr_poly(poly, text))
+            return blk_list
+
+        def _mask_from_textblocks(
+            self, img_shape: tuple, blk_list: List[TextBlock]
+        ) -> np.ndarray:
+            mask = np.zeros(img_shape[:2], dtype=np.uint8)
+            for blk in blk_list:
+                for line in blk.lines:
+                    poly = np.asarray(line, dtype=np.int32)
+                    if poly.size == 8:
+                        poly = poly.reshape(4, 2)
+                    if poly.shape == (4, 2):
+                        cv2.fillPoly(mask, [poly], 255)
+            return mask
+
+        def detect_and_ocr(self, img: np.ndarray):
+            if not self.uses_internal_text_detector():
+                return None, []
+            result = self._run_ocr_model(img)
+            blk_list = self._extract_textblocks(result)
+            mask = self._mask_from_textblocks(img.shape, blk_list)
+            return mask, blk_list
 
         def _extract_texts(self, result):
             if result is None:
@@ -305,6 +445,9 @@ if PADDLE_OCR_AVAILABLE:
             return []
 
         def _load_model(self):
+            if self.model is not None:
+                return
+
             if not PADDLE_RUNTIME_AVAILABLE:
                 raise RuntimeError(PADDLE_RUNTIME_INSTALL_HINT)
 
@@ -314,6 +457,7 @@ if PADDLE_OCR_AVAILABLE:
                 self.logger.info(
                     f"Loading PaddleOCR model for language: {self.language} ({lang_code}), GPU: {use_gpu}"
                 )
+
             new_kwargs = self._build_new_init_kwargs(lang_code, use_gpu)
             legacy_kwargs = self._build_legacy_init_kwargs(lang_code, use_gpu)
             try:
@@ -330,6 +474,23 @@ if PADDLE_OCR_AVAILABLE:
                     )
                 self.model = PaddleOCR(**legacy_kwargs)
                 self._paddleocr_api_style = "legacy"
+
+        def _close_paddle_resource(self, resource):
+            if resource is not None:
+                close = getattr(resource, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                        return True
+                    except Exception as exc:
+                        LOGGER.warning("Failed to close PaddleOCR resource: %s", exc)
+            return False
+
+        def unload_model(self, empty_cache=False):
+            if self.model is not None:
+                if not self._close_paddle_resource(self.model):
+                    self._close_paddle_resource(getattr(self.model, "paddlex_pipeline", None))
+            return super().unload_model(empty_cache=empty_cache)
 
         def ocr_img(self, img: np.ndarray) -> str:
             if self.debug_mode:
@@ -379,38 +540,43 @@ if PADDLE_OCR_AVAILABLE:
                         )
                     blk.text = ""
 
+        def _process_texts(self, raw_texts: List[str]) -> str:
+            if not raw_texts:
+                return ""
+
+            raw_texts = [text for text in raw_texts if text]
+            if not raw_texts:
+                return ""
+
+            # Depending on the output_format, we concatenate the lines
+            if self.output_format == "Single Line":
+                joined_text = " ".join(raw_texts)
+                # Text cleaning
+                joined_text = re.sub(r"-(?!\w)", "", joined_text)
+                joined_text = re.sub(r"\s+", " ", joined_text)
+            elif self.output_format == "As Recognized":
+                joined_text = " ".join(raw_texts)
+                # Clean up text, preserve line breaks
+                joined_text = re.sub(r"-(?!\w)", "", joined_text)
+                joined_text = re.sub(r"\s+", " ", joined_text)
+            else:
+                joined_text = " ".join(raw_texts)
+                joined_text = re.sub(r"-(?!\w)", "", joined_text)
+                joined_text = re.sub(r"\s+", " ", joined_text)
+
+            # Apply case conversion to all text
+            processed_text = self._apply_text_case(joined_text)
+            processed_text = self._apply_punctuation_and_spacing(processed_text)
+
+            if self.debug_mode:
+                self.logger.debug(f"Final processed text: {processed_text}")
+
+            return processed_text
+
         def _process_result(self, result):
             try:
                 raw_texts = self._extract_texts(result)
-                if not raw_texts:
-                    return ""
-
-                # Depending on the output_format, we concatenate the lines
-                if self.output_format == "Single Line":
-                    joined_text = " ".join(raw_texts)
-                    # Text cleaning
-                    joined_text = re.sub(r"-(?!\w)", "", joined_text)
-                    joined_text = re.sub(r"\s+", " ", joined_text)
-                elif self.output_format == "As Recognized":
-                    joined_text = " ".join(
-                        raw_texts
-                    )  # Combine with spaces to create a single text
-                    # Clean up text, preserve line breaks
-                    joined_text = re.sub(r"-(?!\w)", "", joined_text)
-                    joined_text = re.sub(r"\s+", " ", joined_text)
-                else:
-                    joined_text = " ".join(raw_texts)
-                    joined_text = re.sub(r"-(?!\w)", "", joined_text)
-                    joined_text = re.sub(r"\s+", " ", joined_text)
-
-                # Apply case conversion to all text
-                processed_text = self._apply_text_case(joined_text)
-                processed_text = self._apply_punctuation_and_spacing(processed_text)
-
-                if self.debug_mode:
-                    self.logger.debug(f"Final processed text: {processed_text}")
-
-                return processed_text
+                return self._process_texts(raw_texts)
             except Exception as e:
                 if self.debug_mode:
                     self.logger.error(f"Error processing OCR result: {str(e)}")
@@ -468,6 +634,7 @@ if PADDLE_OCR_AVAILABLE:
                 self.det_limit_side_len = self.params["det_limit_side_len"]["value"]
                 self.rec_batch_num = self.params["rec_batch_num"]["value"]
                 self.drop_score = self.params["drop_score"]["value"]
+                self.unload_model(empty_cache=True)
                 self._load_model()
             elif param_key == "text_case":
                 self.text_case = self.params["text_case"]["value"]

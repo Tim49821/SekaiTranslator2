@@ -48,7 +48,7 @@ class ModuleThread(QThread):
         self.imgtrans_proj: ProjImgTrans = None
         self.stop_requested = False
 
-    def _set_module(self, module_name: str):
+    def _set_module(self, module_name: str, load_model: bool = None):
         old_module = self.module
         try:
             module: Union[TextDetectorBase, BaseTranslator, InpainterBase, OCRBase] \
@@ -58,9 +58,15 @@ class ModuleThread(QThread):
                 self.module = module(**params)
             else:
                 self.module = module()
-            if not pcfg.module.load_model_on_demand:
+            if load_model is None:
+                load_model = not pcfg.module.load_model_on_demand
+            if load_model:
                 self.module.load_model()
             if old_module is not None:
+                try:
+                    old_module.unload_model(empty_cache=True)
+                except Exception as exc:
+                    LOGGER.warning('Failed to unload previous %s model: %s', self.module_key, exc)
                 del old_module
         except Exception as e:
             self.module = old_module
@@ -147,8 +153,8 @@ class TextDetectThread(ModuleThread):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__('textdetector', TEXTDETECTORS, *args, **kwargs)
 
-    def setTextDetector(self, textdetector: str):
-        self.job = lambda : self._set_module(textdetector)
+    def setTextDetector(self, textdetector: str, load_model: bool = None):
+        self.job = lambda : self._set_module(textdetector, load_model=load_model)
         self.start()
 
     @property
@@ -326,6 +332,15 @@ class ImgtransThread(QThread):
     @property
     def ocr(self) -> OCRBase:
         return self.ocr_thread.ocr
+
+    def ocr_uses_internal_text_detector(self) -> bool:
+        if not cfg_module.enable_ocr or self.ocr is None:
+            return False
+        uses_internal_detector = getattr(self.ocr, "uses_internal_text_detector", None)
+        return callable(uses_internal_detector) and uses_internal_detector()
+
+    def external_detector_enabled(self) -> bool:
+        return cfg_module.enable_detect and not self.ocr_uses_internal_text_detector()
     
     @property
     def translator(self) -> BaseTranslator:
@@ -419,8 +434,10 @@ class ImgtransThread(QThread):
         self.translate_thread.num_process_pages = self.num_pages
 
         low_vram_trans = False
+        internal_ocr_detector = self.ocr_uses_internal_text_detector()
+        use_external_detector = self.external_detector_enabled()
         self.strict_stage_order = cfg_module.enable_translate and (
-            cfg_module.enable_detect or cfg_module.enable_ocr or cfg_module.enable_inpaint
+            use_external_detector or cfg_module.enable_ocr or cfg_module.enable_inpaint
         )
         if self.translator is not None:
             low_vram_trans = self.translator.low_vram_mode
@@ -445,7 +462,7 @@ class ImgtransThread(QThread):
             mask = blk_list = None
             need_save_mask = False
             blk_removed: List[TextBlock] = []
-            if cfg_module.enable_detect:
+            if use_external_detector:
                 try:
                     mask, blk_list = self.textdetector.detect(img, self.imgtrans_proj)
                     need_save_mask = True
@@ -473,9 +490,30 @@ class ImgtransThread(QThread):
 
             if cfg_module.enable_ocr:
                 try:
-                    self.ocr.run_ocr(img, blk_list)
+                    if internal_ocr_detector:
+                        if not self.ocr.all_model_loaded():
+                            self.ocr.load_model()
+                        mask, detected_blk_list = self.ocr.detect_and_ocr(img)
+                        need_save_mask = mask is not None
+                        if pcfg.module.keep_exist_textlines:
+                            detected_blk_list = (
+                                self.imgtrans_proj.pages[imgname] + detected_blk_list
+                            )
+                            detected_blk_list = sort_regions(detected_blk_list)
+                        blk_list = detected_blk_list
+                        self.imgtrans_proj.pages[imgname] = blk_list
+                    else:
+                        self.ocr.run_ocr(img, blk_list)
                 except Exception as e:
                     create_error_dialog(e, self.tr('OCR Failed.'), 'OCRFailed')
+                    if internal_ocr_detector:
+                        blk_list = []
+                        self.imgtrans_proj.pages[imgname] = blk_list
+
+                if internal_ocr_detector and cfg_module.enable_detect:
+                    self.detect_counter += 1
+                    self.imgtrans_proj.update_page_progress(imgname, RunStatus.FIN_DET)
+                    self.update_detect_progress.emit(self.detect_counter)
                 self.ocr_counter += 1
 
                 if pcfg.restore_ocr_empty:
@@ -571,7 +609,7 @@ class ImgtransThread(QThread):
     def detect_finished(self) -> bool:
         if self.imgtrans_proj is None:
             return True
-        return self.detect_counter == self.num_pages or not cfg_module.enable_detect
+        return self.detect_counter == self.num_pages or not self.external_detector_enabled()
 
     def ocr_finished(self) -> bool:
         if self.imgtrans_proj is None:
@@ -601,7 +639,7 @@ class ImgtransThread(QThread):
             self.job = None
 
     def recent_finished_index(self, ref_counter: int) -> int:
-        if cfg_module.enable_detect:
+        if self.external_detector_enabled():
             ref_counter = min(ref_counter, self.detect_counter)
         if cfg_module.enable_ocr:
             ref_counter = min(ref_counter, self.ocr_counter)
@@ -701,12 +739,14 @@ class ModuleManager(QObject):
         textdetector_panel.addModulesParamWidgets(textdetector_params)
         textdetector_panel.paramwidget_edited.connect(self.on_textdetectorparam_edited)
         textdetector_panel.detector_changed.connect(self.setTextDetector)
+        self.textdetect_thread.finish_set_module.connect(self.unload_external_detector_if_internal_ocr)
 
         self.ocr_panel = ocr_panel = config_panel.ocr_config_panel
         ocr_params = merge_config_module_params(cfg_module.ocr_params, GET_VALID_OCR(), OCR.get)
         ocr_panel.addModulesParamWidgets(ocr_params)
         ocr_panel.paramwidget_edited.connect(self.on_ocrparam_edited)
         ocr_panel.ocr_changed.connect(self.setOCR)
+        self.ocr_thread.finish_set_module.connect(self.unload_external_detector_if_internal_ocr)
         OCRBase.register_postprocess_hooks(ocr_postprocess)
 
         config_panel.unload_models.connect(self.unload_all_models)
@@ -730,6 +770,28 @@ class ModuleManager(QObject):
     @property
     def ocr(self) -> OCRBase:
         return self.ocr_thread.ocr
+
+    def ocr_config_uses_internal_text_detector(self) -> bool:
+        if not cfg_module.enable_ocr:
+            return False
+        if self.imgtrans_thread.ocr_uses_internal_text_detector():
+            return True
+        if cfg_module.ocr != 'paddle_ocr':
+            return False
+        paddle_params = cfg_module.ocr_params.get('paddle_ocr', {})
+        ocr_version = paddle_params.get('ocr_version')
+        if isinstance(ocr_version, dict):
+            ocr_version = ocr_version.get('value')
+        return ocr_version == 'PP-OCRv5'
+
+    def unload_external_detector_if_internal_ocr(self):
+        if not self.ocr_config_uses_internal_text_detector():
+            return
+        detector = self.textdetector
+        if detector is None:
+            return
+        if detector.unload_model(empty_cache=True):
+            LOGGER.info('Unloaded external text detector because PP-OCRv5 uses PaddleOCR internal detection.')
 
     def translatePage(self, run_target: bool, page_key: str):
         if not run_target:
@@ -785,8 +847,10 @@ class ModuleManager(QObject):
                 self.page_trans_finished.emit(ii)
             self.imgtrans_pipeline_finished.emit()
             return
+
+        self.unload_external_detector_if_internal_ocr()
         
-        self.progress_msgbox.detect_bar.setVisible(cfg_module.enable_detect)
+        self.progress_msgbox.detect_bar.setVisible(self.imgtrans_thread.external_detector_enabled())
         self.progress_msgbox.ocr_bar.setVisible(cfg_module.enable_ocr)
         self.progress_msgbox.translate_bar.setVisible(cfg_module.enable_translate)
         self.progress_msgbox.inpaint_bar.setVisible(cfg_module.enable_inpaint)
@@ -880,7 +944,7 @@ class ModuleManager(QObject):
     def progress(self):
         progress = {}
         num_pages = self.imgtrans_thread.num_pages
-        if cfg_module.enable_detect:
+        if self.imgtrans_thread.external_detector_enabled():
             progress['detect'] = self.imgtrans_thread.detect_counter / num_pages
         if cfg_module.enable_ocr:
             progress['ocr'] = self.imgtrans_thread.ocr_counter / num_pages
@@ -941,7 +1005,10 @@ class ModuleManager(QObject):
             LOGGER.warning('Requesting the running text detection thread to stop before changing detector.')
             if not self.textdetect_thread.stopThread():
                 return
-        self.textdetect_thread.setTextDetector(textdetector)
+        load_model = None
+        if self.ocr_config_uses_internal_text_detector():
+            load_model = False
+        self.textdetect_thread.setTextDetector(textdetector, load_model=load_model)
 
     def setOCR(self, ocr: str = None):
         if ocr is None:
@@ -983,6 +1050,7 @@ class ModuleManager(QObject):
         if self.ocr is not None:
             self.updateModuleSetupParam(self.ocr, param_key, param_content)
             cfg_module.ocr_params[self.ocr.name] = self.ocr.params
+            self.unload_external_detector_if_internal_ocr()
 
     def updateModuleSetupParam(self, 
                                module: Union[InpainterBase, BaseTranslator],

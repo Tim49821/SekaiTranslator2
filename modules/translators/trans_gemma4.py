@@ -18,11 +18,6 @@ MODEL_FILES = {
     "Q6_K_M": "gemma-4-E4B-it-Q6_K.gguf",
 }
 DEFAULT_QUANTIZATION = "Q4_K_M"
-QWEN35_MODEL_REPO_ID = "unsloth/Qwen3.5-9B-GGUF"
-QWEN35_MODEL_DIR = "data/models/Qwen3.5-9B-GGUF"
-QWEN35_MODEL_FILES = {
-    "Q4_K_M": "Qwen3.5-9B-Q4_K_M.gguf",
-}
 RUNTIME_PATH = "data/models/gemma-4-runtime"
 WORKER_PATH = Path(__file__).with_name("gemma4_worker.py")
 SETUP_COMMAND = "python scripts/setup_gemma4_runtime.py"
@@ -366,84 +361,5 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
                 "styles": GEMMA_STYLE_GUIDE_PRESETS,
             },
             "description": "Select, add, replace, or delete reusable Gemma translation style guides.",
-        },
-    }
-
-
-@register_translator("Qwen3.5 9B GGUF")
-class Qwen35NineBGGUFTranslator(LocalGGUFTranslator):
-    model_log_name = "Qwen3.5 GGUF"
-    model_repo_id = QWEN35_MODEL_REPO_ID
-    model_dir = QWEN35_MODEL_DIR
-    model_files = QWEN35_MODEL_FILES
-    default_quantization = DEFAULT_QUANTIZATION
-    setup_command = "python scripts/setup_gemma4_runtime.py --model qwen3.5"
-    download_command = "python scripts/setup_gemma4_runtime.py --model qwen3.5 --download-model"
-    hf_model_repo_id = QWEN35_MODEL_REPO_ID
-    hf_model_save_dir = QWEN35_MODEL_DIR
-    hf_model_required_files = [list(QWEN35_MODEL_FILES.values())]
-    hf_model_allow_patterns = [QWEN35_MODEL_FILES[DEFAULT_QUANTIZATION], "README.md", "*.json", "*.jinja"]
-
-    params: Dict = {
-        "description": (
-            "Offline Qwen3.5 9B translator using unsloth/Qwen3.5-9B-GGUF "
-            "Q4_K_M. Place Qwen3.5-9B-Q4_K_M.gguf in data/models/Qwen3.5-9B-GGUF."
-        ),
-        "device": DEVICE_SELECTOR(),
-        "model quantization": {
-            "type": "selector",
-            "options": list(QWEN35_MODEL_FILES.keys()),
-            "value": DEFAULT_QUANTIZATION,
-            "description": "GGUF quantization for unsloth/Qwen3.5-9B-GGUF.",
-        },
-        "worker python": {
-            "value": "",
-            "description": "Optional Python executable for the isolated GGUF runtime. Empty uses BALLOONTRANS_GEMMA4_PYTHON or data/models/gemma-4-runtime.",
-        },
-        "worker timeout": {
-            "value": 600,
-            "description": "Maximum seconds for one Qwen3.5 GGUF subprocess translation call.",
-        },
-        "low vram mode": {
-            "type": "checkbox",
-            "value": True,
-            "description": "Qwen3.5 GGUF runs in a subprocess, so model memory is released after each translation call.",
-        },
-        "max input tokens": {
-            "value": 4096,
-            "description": "Target prompt budget for the full page text list.",
-        },
-        "max new tokens": {
-            "value": 2048,
-            "description": "Maximum generated tokens for the full page translation response.",
-        },
-        "context tokens": {
-            "value": 8192,
-            "description": "llama.cpp context size for the GGUF model.",
-        },
-        "gpu layers": {
-            "value": -1,
-            "description": "llama.cpp n_gpu_layers. Use 0 for CPU only, -1 to offload all supported layers.",
-        },
-        "threads": {
-            "value": 0,
-            "description": "llama.cpp CPU threads. 0 lets llama.cpp choose automatically.",
-        },
-        "temperature": {
-            "value": 0.0,
-            "description": "Sampling temperature. 0 keeps translation deterministic.",
-        },
-        "top_p": {
-            "value": 1.0,
-            "description": "Nucleus sampling top_p. Lower values narrow token choices; 1.0 disables nucleus filtering.",
-        },
-        "top_k": {
-            "value": 40,
-            "description": "Top-k sampling limit. 0 disables top-k filtering in llama.cpp.",
-        },
-        "thinking mode": {
-            "type": "checkbox",
-            "value": True,
-            "description": "Allow Qwen thinking behavior in the prompt. Output is still constrained to page translations only.",
         },
     }

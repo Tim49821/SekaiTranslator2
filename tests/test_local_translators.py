@@ -15,49 +15,13 @@ from modules.base import BaseModule, init_translator_registries
 from modules.prepare_local_files import download_and_check_hf_model_files, should_prepare_hf_model
 from modules.translators import TRANSLATORS
 from modules.translators import gemma4_worker
-from modules.translators.trans_gemma4 import Gemma4E4BTranslator, Qwen35NineBGGUFTranslator
+from modules.translators.trans_gemma4 import Gemma4E4BTranslator
 from modules.translators.trans_llm_api_json import (
     LLM_PROVIDER_DEFAULT_MODELS,
     LLM_PROVIDER_MODEL_OPTIONS,
     GoogleLLMTranslator,
     OpenAILLMTranslator,
 )
-from modules.translators.trans_nllb import NLLB200DistilledTranslator
-
-
-class FakeNLLBTokenizer:
-    def __init__(self):
-        self.src_lang = None
-        self.calls = []
-        self.target_tokens = []
-
-    def __call__(self, texts, **kwargs):
-        self.calls.append((texts, kwargs))
-        return {"texts": texts}
-
-    def convert_tokens_to_ids(self, token):
-        self.target_tokens.append(token)
-        return 99
-
-    def batch_decode(self, generated_tokens, skip_special_tokens=True):
-        return [f"decoded:{token}" for token in generated_tokens]
-
-
-class FakeNLLBModel:
-    def __init__(self):
-        self.device = None
-        self.generate_calls = []
-
-    def to(self, device):
-        self.device = device
-        return self
-
-    def eval(self):
-        return self
-
-    def generate(self, **kwargs):
-        self.generate_calls.append(kwargs)
-        return [f"gen:{text}" for text in kwargs["texts"]]
 
 
 class FakeInputIds:
@@ -218,9 +182,9 @@ class LocalTranslatorRegistrationTest(unittest.TestCase):
     def test_registers_local_translators(self):
         init_translator_registries()
 
-        self.assertIn("NLLB-200 distilled 1.3B", TRANSLATORS.module_dict)
         self.assertIn("Gemma 4 E4B-it", TRANSLATORS.module_dict)
-        self.assertIn("Qwen3.5 9B GGUF", TRANSLATORS.module_dict)
+        self.assertNotIn("NLLB-200 distilled 1.3B", TRANSLATORS.module_dict)
+        self.assertNotIn("Qwen3.5 9B GGUF", TRANSLATORS.module_dict)
 
 
 class LLMTranslatorCatalogTest(unittest.TestCase):
@@ -323,21 +287,24 @@ class LocalModelDownloadTest(unittest.TestCase):
 
 
 class GGUFSetupRuntimeTest(unittest.TestCase):
-    def test_setup_script_selects_qwen35_from_cli_alias(self):
-        with patch.object(sys, "argv", ["setup_gemma4_runtime.py", "--model", "qwen3.5"]), \
-             patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(setup_gemma4_runtime.selected_model_key(), "qwen35")
-            self.assertEqual(setup_gemma4_runtime.selected_quantization("qwen35"), "Q4_K_M")
+    def test_setup_script_only_exposes_gemma4_model_config(self):
+        self.assertEqual(set(setup_gemma4_runtime.MODEL_CONFIGS), {"gemma4"})
 
-    def test_setup_script_downloads_qwen35_to_declared_model_dir(self):
+    def test_setup_script_selects_gemma4_from_cli_alias(self):
+        with patch.object(sys, "argv", ["setup_gemma4_runtime.py", "--model", "gemma4"]), \
+             patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(setup_gemma4_runtime.selected_model_key(), "gemma4")
+            self.assertEqual(setup_gemma4_runtime.selected_quantization("gemma4"), "Q4_K_M")
+
+    def test_setup_script_downloads_gemma4_to_declared_model_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            config = setup_gemma4_runtime.MODEL_CONFIGS["qwen35"]
+            config = setup_gemma4_runtime.MODEL_CONFIGS["gemma4"]
             original_model_dir = config["model_dir"]
             config["model_dir"] = Path(temp_dir)
             try:
-                with patch.object(sys, "argv", ["setup_gemma4_runtime.py", "--model", "qwen3.5", "--download-model"]), \
+                with patch.object(sys, "argv", ["setup_gemma4_runtime.py", "--model", "gemma4", "--download-model"]), \
                      patch("scripts.setup_gemma4_runtime.run") as run_mock:
-                    setup_gemma4_runtime.download_model(Path("/fake/python"), "qwen35")
+                    setup_gemma4_runtime.download_model(Path("/fake/python"), "gemma4")
             finally:
                 config["model_dir"] = original_model_dir
 
@@ -345,30 +312,8 @@ class GGUFSetupRuntimeTest(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertEqual(command[0], Path("/fake/python"))
         self.assertEqual(command[1], "-c")
-        self.assertIn("unsloth/Qwen3.5-9B-GGUF", command[2])
-        self.assertIn("Qwen3.5-9B-Q4_K_M.gguf", command[2])
-
-
-class NLLBTranslatorTest(unittest.TestCase):
-    def test_translates_small_batches_with_target_language_token(self):
-        tokenizer = FakeNLLBTokenizer()
-        model = FakeNLLBModel()
-
-        with patch("modules.translators.trans_nllb.osp.isdir", return_value=True), \
-             patch("modules.translators.trans_nllb.AutoTokenizer.from_pretrained", return_value=tokenizer), \
-             patch("modules.translators.trans_nllb.AutoModelForSeq2SeqLM.from_pretrained", return_value=model):
-            translator = NLLB200DistilledTranslator(
-                "日本語",
-                "한국어",
-                **{"batch size": 2},
-            )
-            result = translator.translate(["line one", "", "line two"])
-
-        self.assertEqual(result, ["decoded:gen:line one", "", "decoded:gen:line two"])
-        self.assertEqual(tokenizer.src_lang, "jpn_Jpan")
-        self.assertEqual(tokenizer.target_tokens, ["kor_Hang"])
-        self.assertEqual(model.generate_calls[0]["forced_bos_token_id"], 99)
-        self.assertEqual(len(model.generate_calls), 1)
+        self.assertIn("unsloth/gemma-4-E4B-it-GGUF", command[2])
+        self.assertIn("gemma-4-E4B-it-Q4_K_M.gguf", command[2])
 
 
 class GemmaTranslatorTest(unittest.TestCase):
@@ -450,31 +395,6 @@ class GemmaTranslatorTest(unittest.TestCase):
         payload = json.loads(run_mock.call_args.kwargs["input"])
         self.assertEqual(payload["model_quantization"], "Q6_K_M")
         self.assertEqual(payload["model_path"], "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q6_K.gguf")
-
-    def test_qwen_gguf_uses_q4_model_file(self):
-        stdout = '{"translations":["one"]}'
-        with patch("modules.translators.trans_gemma4.osp.isfile", return_value=True), \
-             patch("modules.translators.trans_gemma4.subprocess.run", return_value=FakeCompletedProcess(stdout=stdout)) as run_mock:
-            translator = Qwen35NineBGGUFTranslator(
-                "日本語",
-                "한국어",
-                **{
-                    "worker python": "/fake/python",
-                    "device": "cpu",
-                    "max input tokens": 128,
-                    "max new tokens": 64,
-                    "context tokens": 512,
-                    "gpu layers": -1,
-                },
-            )
-            result = translator.translate(["line one"])
-
-        self.assertEqual(result, ["one"])
-        payload = json.loads(run_mock.call_args.kwargs["input"])
-        self.assertEqual(payload["model_quantization"], "Q4_K_M")
-        self.assertEqual(payload["model_log_name"], "Qwen3.5 GGUF")
-        self.assertEqual(payload["model_path"], "data/models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf")
-        self.assertEqual(payload["gpu_layers"], 0)
 
     def test_missing_gguf_model_returns_short_error(self):
         with patch("modules.translators.trans_gemma4.osp.isfile", return_value=False), \

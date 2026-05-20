@@ -45,7 +45,7 @@ openai>=2.8.1
 # PaddleOCR 3.x loads the PaddlePaddle runtime only when inference starts.
 # CUDA users can replace this CPU package with paddlepaddle-gpu per PaddlePaddle docs.
 paddlepaddle>=3.3.0,<4.0.0
-paddleocr==3.5.0
+paddleocr[doc-parser]==3.5.0
 pyyaml
 natsort
 py7zr

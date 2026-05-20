@@ -21,17 +21,6 @@ MODEL_CONFIGS = {
         "quant_env": "BALLOONTRANS_GEMMA4_GGUF_QUANT",
         "aliases": {"gemma", "gemma4", "gemma-4", "gemma-4-e4b-it"},
     },
-    "qwen35": {
-        "display_name": "Qwen3.5 GGUF",
-        "repo_id": "unsloth/Qwen3.5-9B-GGUF",
-        "model_dir": APP_ROOT / "data" / "models" / "Qwen3.5-9B-GGUF",
-        "files": {
-            "Q4_K_M": "Qwen3.5-9B-Q4_K_M.gguf",
-        },
-        "download_env": "BALLOONTRANS_DOWNLOAD_QWEN35_GGUF",
-        "quant_env": "BALLOONTRANS_QWEN35_GGUF_QUANT",
-        "aliases": {"qwen", "qwen35", "qwen3.5", "qwen3.5-9b", "qwen-3.5-9b"},
-    },
 }
 
 
