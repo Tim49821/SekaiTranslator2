@@ -14,6 +14,14 @@ from ui.threading_utils import any_thread_running, wait_if_running
 from utils.config import pcfg
 from utils.io_utils import IMG_EXT
 from utils.logger import logger as LOGGER
+from utils.api_uploads import (
+    InvalidImageUpload,
+    UploadTooLarge,
+    copy_upload_file,
+    max_upload_bytes_from_env,
+    upload_too_large_message,
+    validate_image_file,
+)
 
 
 _CONTENT_TYPE_EXT = {
@@ -315,15 +323,22 @@ def upload_extension(filename: str, content_type: str) -> Optional[str]:
     return _CONTENT_TYPE_EXT.get(content_type)
 
 
-def save_upload_to_project(file, ext: str, project_dir: str) -> Path:
+def save_upload_to_project(file, ext: str, project_dir: str, max_upload_bytes: int) -> Path:
     filename = f"input{ext}"
     input_path = Path(project_dir) / filename
-    with input_path.open("wb") as out_file:
-        shutil.copyfileobj(file.file, out_file)
-
-    if input_path.stat().st_size == 0:
-        raise ValueError("Uploaded file is empty.")
+    copy_upload_file(file.file, input_path, max_upload_bytes)
+    validate_image_file(input_path)
     return input_path
+
+
+def raise_upload_http_exception(exc: Exception) -> None:
+    from fastapi import HTTPException
+
+    if isinstance(exc, UploadTooLarge):
+        raise HTTPException(status_code=413, detail=str(exc))
+    if isinstance(exc, InvalidImageUpload):
+        raise HTTPException(status_code=400, detail=str(exc))
+    raise HTTPException(status_code=400, detail=str(exc))
 
 
 def create_app(
@@ -331,12 +346,29 @@ def create_app(
     translation_lock: threading.Lock,
     api_token: str = "",
     result_ttl_seconds: int = 3600,
+    max_upload_bytes: int = None,
 ):
-    from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-    from fastapi.responses import Response
+    from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+    from fastapi.responses import JSONResponse, Response
 
+    max_upload_bytes = max_upload_bytes or max_upload_bytes_from_env()
     app = FastAPI(title="BalloonsTranslator Headless API")
     job_manager = TranslationJobManager(bridge, translation_lock, result_ttl_seconds)
+
+    @app.middleware("http")
+    async def reject_large_requests(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH"}:
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > max_upload_bytes:
+                        return JSONResponse(
+                            status_code=413,
+                            content={"detail": upload_too_large_message(max_upload_bytes)},
+                        )
+                except ValueError:
+                    pass
+        return await call_next(request)
 
     def require_auth(authorization: Optional[str] = Header(default=None)) -> None:
         if not api_token:
@@ -351,6 +383,7 @@ def create_app(
             "busy": translation_lock.locked() or bridge.busy,
             "queued": job_manager.has_pending_jobs(),
             "result_format": pcfg.imgsave_ext,
+            "max_upload_bytes": max_upload_bytes,
         }
 
     @app.post("/translate")
@@ -362,9 +395,9 @@ def create_app(
         with translation_lock:
             with tempfile.TemporaryDirectory(prefix="balloontrans-api-") as tmp_dir:
                 try:
-                    save_upload_to_project(file, ext, tmp_dir)
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+                    save_upload_to_project(file, ext, tmp_dir, max_upload_bytes)
+                except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
+                    raise_upload_http_exception(exc)
 
                 outcome = bridge.translate(tmp_dir)
                 if not outcome.ok:
@@ -388,10 +421,10 @@ def create_app(
 
         project_dir = tempfile.mkdtemp(prefix="balloontrans-api-job-")
         try:
-            save_upload_to_project(file, ext, project_dir)
-        except ValueError:
+            save_upload_to_project(file, ext, project_dir, max_upload_bytes)
+        except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
             shutil.rmtree(project_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            raise_upload_http_exception(exc)
         except Exception:
             shutil.rmtree(project_dir, ignore_errors=True)
             raise
@@ -435,12 +468,13 @@ def start_headless_server(
     port: int,
     api_token: str = "",
     result_ttl_seconds: int = 3600,
+    max_upload_bytes: int = None,
 ):
     import uvicorn
 
     bridge = HeadlessTranslationBridge(main_window)
     translation_lock = threading.Lock()
-    app = create_app(bridge, translation_lock, api_token, result_ttl_seconds)
+    app = create_app(bridge, translation_lock, api_token, result_ttl_seconds, max_upload_bytes)
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)

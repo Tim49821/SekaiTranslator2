@@ -117,6 +117,24 @@ class PaddleXPPocrV5DetectorBase(TextDetectorBase):
             "value": 0.0,
             "description": "Additional post-filter for dt_scores.",
         },
+        "merge nearby boxes": {
+            "display_name": "Merge nearby boxes",
+            "type": "checkbox",
+            "value": True,
+            "description": "Merge close PP-OCRv5 detections into a single text block.",
+        },
+        "merge gap ratio": {
+            "display_name": "Merge gap ratio",
+            "type": "line_editor",
+            "value": 0.6,
+            "description": "Merge gap relative to detected font size.",
+        },
+        "merge gap max": {
+            "display_name": "Merge gap max",
+            "type": "line_editor",
+            "value": 48.0,
+            "description": "Maximum pixel gap used when merging nearby boxes.",
+        },
         "font size multiplier": {
             "display_name": "Font size multiplier",
             "type": "line_editor",
@@ -347,6 +365,95 @@ class PaddleXPPocrV5DetectorBase(TextDetectorBase):
             blk._detected_font_size = blk.font_size
         return blk
 
+    def _merge_gap_for_block(self, blk: TextBlock) -> float:
+        gap_ratio = max(float(self.get_param_value("merge gap ratio")), 0.0)
+        gap_max = max(float(self.get_param_value("merge gap max")), 0.0)
+        font_size = max(float(blk.detected_font_size), float(blk.font_size), 1.0)
+        return min(font_size * gap_ratio, gap_max)
+
+    def _expanded_xyxy(
+        self, blk: TextBlock, gap: float, im_w: int, im_h: int
+    ) -> Tuple[float, float, float, float]:
+        x1, y1, x2, y2 = blk.xyxy
+        return (
+            max(float(x1) - gap, 0.0),
+            max(float(y1) - gap, 0.0),
+            min(float(x2) + gap, float(im_w)),
+            min(float(y2) + gap, float(im_h)),
+        )
+
+    def _expanded_boxes_intersect(
+        self, blk: TextBlock, other: TextBlock, im_w: int, im_h: int
+    ) -> bool:
+        if blk.vertical != other.vertical:
+            return False
+
+        box = self._expanded_xyxy(blk, self._merge_gap_for_block(blk), im_w, im_h)
+        other_box = self._expanded_xyxy(
+            other, self._merge_gap_for_block(other), im_w, im_h
+        )
+        return (
+            min(box[2], other_box[2]) >= max(box[0], other_box[0])
+            and min(box[3], other_box[3]) >= max(box[1], other_box[1])
+        )
+
+    def _merged_textblock_from_group(
+        self, group: List[TextBlock], im_w: int, im_h: int
+    ) -> TextBlock:
+        if len(group) == 1:
+            return group[0]
+
+        lines = []
+        for blk in group:
+            for line in blk.lines:
+                lines.append(np.asarray(line, dtype=np.int32).tolist())
+
+        merged_blk = TextBlock(
+            lines=lines,
+            src_is_vertical=group[0].vertical,
+            label=self.paddlex_model_name,
+        )
+        merged_blk.vertical = group[0].vertical
+        merged_blk.adjust_bbox()
+        examine_textblk(merged_blk, im_w, im_h, sort=True)
+        if merged_blk._detected_font_size <= 0:
+            merged_blk._detected_font_size = merged_blk.font_size
+        return merged_blk
+
+    def _merge_nearby_textblocks(
+        self, blk_list: List[TextBlock], im_w: int, im_h: int
+    ) -> List[TextBlock]:
+        if len(blk_list) < 2 or not self.get_param_value("merge nearby boxes"):
+            return blk_list
+
+        parents = list(range(len(blk_list)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        for left_idx, blk in enumerate(blk_list):
+            for right_idx in range(left_idx + 1, len(blk_list)):
+                if self._expanded_boxes_intersect(blk, blk_list[right_idx], im_w, im_h):
+                    union(left_idx, right_idx)
+
+        grouped: Dict[int, List[TextBlock]] = {}
+        for idx, blk in enumerate(blk_list):
+            grouped.setdefault(find(idx), []).append(blk)
+
+        return [
+            self._merged_textblock_from_group(group, im_w, im_h)
+            for group in grouped.values()
+        ]
+
     def _apply_font_size_params(self, blk_list: List[TextBlock]) -> None:
         fnt_rsz = self.get_param_value("font size multiplier")
         fnt_max = self.get_param_value("font size max")
@@ -392,6 +499,7 @@ class PaddleXPPocrV5DetectorBase(TextDetectorBase):
             cv2.fillPoly(mask, [np.round(pts).astype(np.int32)], 255)
             blk_list.append(blk)
 
+        blk_list = self._merge_nearby_textblocks(blk_list, im_w, im_h)
         blk_list = sort_regions(blk_list)
         self._apply_font_size_params(blk_list)
 

@@ -24,6 +24,8 @@ from utils.proj_imgtrans import ProjImgTrans
 CANVAS_SCALE_MAX = 10.0
 CANVAS_SCALE_MIN = 0.01
 CANVAS_SCALE_SPEED = 0.1
+DEFAULT_TEXTBLOCK_WIDTH = 240
+DEFAULT_TEXTBLOCK_HEIGHT = 90
 
 class MoveByKeyCommand(QUndoCommand):
     def __init__(self, blkitems: List[TextBlkItem], direction: QPointF, shape_ctrl: TextBlkShapeControl) -> None:
@@ -313,6 +315,71 @@ class Canvas(QGraphicsScene):
             return self.inpaintLayer.pixmap().size()
         return self.baseLayer.rect().size().toSize()
 
+    def _has_valid_image(self) -> bool:
+        return self.imgtrans_proj is not None and self.imgtrans_proj.img_valid
+
+    def _current_image_size(self) -> QSizeF:
+        if self.imgtrans_proj is not None and self.imgtrans_proj.img_array is not None:
+            h, w = self.imgtrans_proj.img_array.shape[:2]
+            return QSizeF(w, h)
+        return QSizeF(C.SCREEN_W, C.SCREEN_H)
+
+    def can_create_textblock(self) -> bool:
+        return self.textEditMode() and self._has_valid_image()
+
+    def can_copy_textblocks(self) -> bool:
+        return self.textEditMode() and (
+            self.have_selected_blkitem or self.txtblkShapeControl.blk_item is not None
+        )
+
+    def can_delete_textblocks(self) -> bool:
+        return self.can_copy_textblocks()
+
+    def manual_textblock_state(self) -> dict:
+        selected_count = len(self.selected_text_items())
+        can_create = self.can_create_textblock()
+        can_select_existing = self.textEditMode() and (
+            selected_count > 0 or self.txtblkShapeControl.blk_item is not None
+        )
+        return {
+            "image_valid": self._has_valid_image(),
+            "text_edit_mode": self.textEditMode(),
+            "textblock_mode": self.textblock_mode,
+            "selected_count": selected_count,
+            "has_active_textblock": self.txtblkShapeControl.blk_item is not None,
+            "clipboard_textblocks": len(self.clipboard_blks),
+            "can_quick_create": can_create,
+            "can_drag_create": can_create and self.textblock_mode,
+            "can_copy": can_select_existing,
+            "can_delete": can_select_existing,
+            "can_paste": self.textEditMode() and (can_select_existing or len(self.clipboard_blks) > 0),
+        }
+
+    def viewport_scene_center(self) -> QPointF:
+        return self.gv.mapToScene(self.gv.viewport().rect().center())
+
+    def _default_textblock_rect(self, scene_pos: QPointF = None) -> QRectF:
+        if scene_pos is None:
+            scene_pos = self.viewport_scene_center()
+
+        img_size = self._current_image_size()
+        img_w = max(2.0, img_size.width())
+        img_h = max(2.0, img_size.height())
+        width = min(DEFAULT_TEXTBLOCK_WIDTH, img_w)
+        height = min(DEFAULT_TEXTBLOCK_HEIGHT, img_h)
+
+        pos = scene_pos / self.scale_factor
+        x = min(max(pos.x() - width / 2, 0), max(0, img_w - width))
+        y = min(max(pos.y() - height / 2, 0), max(0, img_h - height))
+        return QRectF(x, y, width, height)
+
+    def create_textblock_at(self, scene_pos: QPointF = None) -> bool:
+        if not self.can_create_textblock():
+            return False
+        self.clearSelection()
+        self.end_create_textblock.emit(self._default_textblock_rect(scene_pos))
+        return True
+
     def dragEnterEvent(self, e: QGraphicsSceneDragDropEvent):
         
         self.drop_folder = None
@@ -491,6 +558,11 @@ class Canvas(QGraphicsScene):
         key = event.key()
 
         modifiers = event.modifiers()
+        if self.textEditMode() and self.editing_textblkitem is None and key == Qt.Key.Key_Insert:
+            if self.create_textblock_at(self.scene_cursor_pos()):
+                event.setAccepted(True)
+                return
+
         if (modifiers == Qt.KeyboardModifier.AltModifier) and \
             not key == QKEY.Key_Alt and \
                 self.editing_textblkitem is None:
@@ -670,11 +742,11 @@ class Canvas(QGraphicsScene):
             self.pan_initial_pos = event.screenPos()
             return
         
-        if self.imgtrans_proj.img_valid:
+        if self._has_valid_image():
             if self.paint_busy and self.drawMode():
                 event.accept()
                 return
-            if self.textblock_mode and len(self.selectedItems()) == 0 and self.textEditMode():
+            if self.textblock_mode and len(self.selectedItems()) == 0 and self.can_create_textblock():
                 if btn == Qt.MouseButton.RightButton:
                     return self.startCreateTextblock(event.scenePos())
             elif self.creating_normal_rect:
@@ -804,35 +876,59 @@ class Canvas(QGraphicsScene):
     def on_create_contextmenu(self, pos: QPoint, is_textpanel: bool):
         if self.textEditMode() and not self.creating_textblock:
             menu = QMenu(self.gv)
+            state = self.manual_textblock_state()
+            add_textblock_act = menu.addAction(self.tr("Add text box here"))
+            add_textblock_act.setShortcut(QKeySequence(Qt.Key.Key_Insert))
+            add_textblock_act.setEnabled(state["can_quick_create"])
+            menu.addSeparator()
+
             copy_act = menu.addAction(self.tr("Copy"))
             copy_act.setShortcut(QKeySequence.StandardKey.Copy)
+            copy_act.setEnabled(state["can_copy"])
             paste_act = menu.addAction(self.tr("Paste"))
             paste_act.setShortcut(QKeySequence.StandardKey.Paste)
+            paste_act.setEnabled(state["can_paste"])
             delete_act = menu.addAction(self.tr("Delete"))
             delete_act.setShortcut(QKeySequence("Ctrl+D"))
+            delete_act.setEnabled(state["can_delete"])
             copy_src_act = menu.addAction(self.tr("Copy source text"))
             copy_src_act.setShortcut(QKeySequence("Ctrl+Shift+C"))
+            copy_src_act.setEnabled(state["can_copy"])
             paste_src_act = menu.addAction(self.tr("Paste source text"))
             paste_src_act.setShortcut(QKeySequence("Ctrl+Shift+V"))
+            paste_src_act.setEnabled(state["can_copy"])
             delete_recover_act = menu.addAction(self.tr("Delete and Recover removed text"))
             delete_recover_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
+            delete_recover_act.setEnabled(state["can_delete"])
 
             menu.addSeparator()
 
             format_act = menu.addAction(self.tr("Apply font formatting"))
+            format_act.setEnabled(state["can_copy"])
             layout_act = menu.addAction(self.tr("Auto layout"))
+            layout_act.setEnabled(state["can_copy"])
             angle_act = menu.addAction(self.tr("Reset Angle"))
+            angle_act.setEnabled(state["can_copy"])
             squeeze_act = menu.addAction(self.tr("Squeeze"))
+            squeeze_act.setEnabled(state["can_copy"])
             menu.addSeparator()
             translate_act = menu.addAction(self.tr("translate"))
+            translate_act.setEnabled(state["can_copy"])
             ocr_act = menu.addAction(self.tr("OCR"))
+            ocr_act.setEnabled(state["can_copy"])
             ocr_translate_act = menu.addAction(self.tr("OCR and translate"))
+            ocr_translate_act.setEnabled(state["can_copy"])
             ocr_translate_inpaint_act = menu.addAction(self.tr("OCR, translate and inpaint"))
+            ocr_translate_inpaint_act.setEnabled(state["can_copy"])
             inpaint_act = menu.addAction(self.tr("inpaint"))
+            inpaint_act.setEnabled(state["can_copy"])
 
             rst = menu.exec(pos)
             
-            if rst == delete_act:
+            if rst == add_textblock_act:
+                scene_pos = None if is_textpanel else self.gv.mapToScene(self.gv.mapFromGlobal(pos))
+                self.create_textblock_at(scene_pos)
+            elif rst == delete_act:
                 self.delete_textblks.emit(0)
             elif rst == delete_recover_act:
                 self.delete_textblks.emit(1)
@@ -873,12 +969,12 @@ class Canvas(QGraphicsScene):
                 p = self.scene_cursor_pos()
             if self.have_selected_blkitem:
                 self.paste2selected_textitems.emit()
-            else:
+            elif len(self.clipboard_blks) > 0:
                 self.paste_textblks.emit(p)
 
     def on_copy(self):
         if self.textEditMode():
-            if self.have_selected_blkitem:
+            if self.can_copy_textblocks():
                 self.copy_textblks.emit()
 
     def hide_rubber_band(self):

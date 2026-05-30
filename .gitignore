@@ -2,6 +2,7 @@
 .venv/
 logs/
 .btrans_cache/
+relay_storage/
 __pycache__/
 */__pycache__/
 *.pyc

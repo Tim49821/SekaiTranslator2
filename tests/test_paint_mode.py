@@ -38,6 +38,21 @@ class FakeProject:
         self.mask_array = np.zeros((6, 6), dtype=np.uint8)
 
 
+class FakeTextProject:
+    def __init__(self):
+        self.img_array = np.zeros((200, 300, 3), dtype=np.uint8)
+        self.inpainted_array = np.copy(self.img_array)
+        self.mask_array = np.zeros((200, 300), dtype=np.uint8)
+
+    @property
+    def img_valid(self):
+        return True
+
+    @property
+    def inpainted_valid(self):
+        return True
+
+
 class FakeCanvas:
     def __init__(self):
         self.imgtrans_proj = FakeProject()
@@ -160,6 +175,45 @@ class PaintModeTest(unittest.TestCase):
         canvas.redo()
         self.assertEqual(canvas.num_pushed_drawstep, 1)
         self.assertEqual(command.value, 1)
+
+    def test_canvas_tracks_manual_textblock_availability(self):
+        canvas = Canvas()
+        canvas.imgtrans_proj = FakeTextProject()
+
+        state = canvas.manual_textblock_state()
+        self.assertFalse(state["can_quick_create"])
+        self.assertFalse(state["can_drag_create"])
+        self.assertFalse(state["can_delete"])
+
+        canvas.editor_index = 1
+        state = canvas.manual_textblock_state()
+        self.assertTrue(state["can_quick_create"])
+        self.assertFalse(state["can_drag_create"])
+
+        canvas.setTextBlockMode(True)
+        canvas.txtblkShapeControl.blk_item = object()
+        state = canvas.manual_textblock_state()
+        self.assertTrue(state["can_drag_create"])
+        self.assertTrue(state["can_delete"])
+        self.assertTrue(state["has_active_textblock"])
+
+    def test_create_textblock_at_emits_default_rect_in_image_coordinates(self):
+        canvas = Canvas()
+        canvas.imgtrans_proj = FakeTextProject()
+        canvas.editor_index = 1
+        canvas.scale_factor = 2.0
+        emitted_rects = []
+        canvas.end_create_textblock.connect(lambda rect: emitted_rects.append(rect))
+
+        created = canvas.create_textblock_at(QPointF(1000, 1000))
+
+        self.assertTrue(created)
+        self.assertEqual(len(emitted_rects), 1)
+        rect = emitted_rects[0]
+        self.assertEqual(rect.x(), 60)
+        self.assertEqual(rect.y(), 110)
+        self.assertEqual(rect.width(), 240)
+        self.assertEqual(rect.height(), 90)
 
     def test_eraser_tool_is_selectable_painting_tool(self):
         canvas = Canvas()

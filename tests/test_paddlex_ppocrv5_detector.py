@@ -52,6 +52,9 @@ class PaddleXPPocrV5DetectorTest(unittest.TestCase):
         detector.model = FakePaddleXModel(detection_res)
         return detector
 
+    def rect_poly(self, x1, y1, x2, y2):
+        return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
     def test_detectors_are_registered_with_official_model_names(self):
         self.assertIs(TEXTDETECTORS.get("PP-OCRv5_server_det"), PPOCRv5ServerDetector)
         self.assertIs(TEXTDETECTORS.get("PP-OCRv5_mobile_det"), PPOCRv5MobileDetector)
@@ -127,6 +130,103 @@ class PaddleXPPocrV5DetectorTest(unittest.TestCase):
         self.assertEqual(mask[20, 20], 255)
         self.assertEqual(mask[20, 70], 0)
         self.assertEqual(detector.model.last_batch_size, 3)
+
+    def test_nearby_boxes_are_merged_into_one_textblock(self):
+        detector = self.make_detector(
+            {
+                "dt_polys": np.array(
+                    [
+                        self.rect_poly(10, 10, 30, 30),
+                        self.rect_poly(38, 10, 58, 30),
+                    ],
+                    dtype=np.int16,
+                )
+            }
+        )
+
+        mask, blk_list = detector._detect(np.zeros((100, 100, 3), dtype=np.uint8))
+
+        self.assertEqual(len(blk_list), 1)
+        self.assertEqual(len(blk_list[0].lines), 2)
+        self.assertEqual(blk_list[0].xyxy, [10, 10, 58, 30])
+        self.assertEqual(mask[20, 15], 255)
+        self.assertEqual(mask[20, 45], 255)
+        self.assertEqual(mask[20, 34], 0)
+
+    def test_far_boxes_are_not_merged(self):
+        detector = self.make_detector(
+            {
+                "dt_polys": np.array(
+                    [
+                        self.rect_poly(10, 10, 30, 30),
+                        self.rect_poly(70, 10, 90, 30),
+                    ],
+                    dtype=np.int16,
+                )
+            }
+        )
+
+        _, blk_list = detector._detect(np.zeros((100, 100, 3), dtype=np.uint8))
+
+        self.assertEqual(len(blk_list), 2)
+        self.assertEqual([blk.xyxy for blk in blk_list], [[10, 10, 30, 30], [70, 10, 90, 30]])
+
+    def test_merge_nearby_boxes_can_be_disabled(self):
+        detector = self.make_detector(
+            {
+                "dt_polys": np.array(
+                    [
+                        self.rect_poly(10, 10, 30, 30),
+                        self.rect_poly(38, 10, 58, 30),
+                    ],
+                    dtype=np.int16,
+                )
+            },
+            **{"merge nearby boxes": False},
+        )
+
+        _, blk_list = detector._detect(np.zeros((100, 100, 3), dtype=np.uint8))
+
+        self.assertEqual(len(blk_list), 2)
+        self.assertEqual([len(blk.lines) for blk in blk_list], [1, 1])
+
+    def test_boxes_with_different_direction_are_not_merged(self):
+        detector = self.make_detector(
+            {
+                "dt_polys": np.array(
+                    [
+                        self.rect_poly(10, 10, 30, 30),
+                        self.rect_poly(34, 10, 50, 60),
+                    ],
+                    dtype=np.int16,
+                )
+            }
+        )
+
+        _, blk_list = detector._detect(np.zeros((100, 100, 3), dtype=np.uint8))
+
+        self.assertEqual(len(blk_list), 2)
+        self.assertEqual({blk.vertical for blk in blk_list}, {False, True})
+
+    def test_nearby_box_merge_is_transitive(self):
+        detector = self.make_detector(
+            {
+                "dt_polys": np.array(
+                    [
+                        self.rect_poly(10, 10, 30, 30),
+                        self.rect_poly(38, 10, 58, 30),
+                        self.rect_poly(66, 10, 86, 30),
+                    ],
+                    dtype=np.int16,
+                )
+            }
+        )
+
+        _, blk_list = detector._detect(np.zeros((100, 100, 3), dtype=np.uint8))
+
+        self.assertEqual(len(blk_list), 1)
+        self.assertEqual(len(blk_list[0].lines), 3)
+        self.assertEqual(blk_list[0].xyxy, [10, 10, 86, 30])
 
     def test_flat_polygons_and_dict_results_are_supported(self):
         detector = PPOCRv5MobileDetector(**{"mask dilate size": 0})

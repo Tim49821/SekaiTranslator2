@@ -1,6 +1,6 @@
 # Headless API / Relay 실행 가이드
 
-이 문서는 이미 구성된 Headless API, Relay 서버, Cloudflare Tunnel, local worker를 실행하는 방법을 정리합니다.
+이 문서는 Headless API, Relay 서버, Cloudflare Tunnel, local worker를 실행하는 방법을 정리합니다.
 iOS 단축어 설정은 [IOS_SHORTCUT_KO.md](IOS_SHORTCUT_KO.md)를 참고하세요.
 
 ## 구성
@@ -9,7 +9,7 @@ iOS 단축어 설정은 [IOS_SHORTCUT_KO.md](IOS_SHORTCUT_KO.md)를 참고하세
 
 ```text
 외부 클라이언트
-  -> https://translator.allen-lee.blog/translate/raw 또는 /jobs
+  -> $BT_RELAY_PUBLIC_URL/translate/raw 또는 /jobs
   -> relay_server.py
   -> local_worker.py
   -> launch.py --headless-server
@@ -22,37 +22,37 @@ iOS 단축어 설정은 [IOS_SHORTCUT_KO.md](IOS_SHORTCUT_KO.md)를 참고하세
 | 역할 | 명령 | 설명 |
 | --- | --- | --- |
 | Relay 서버 | `relay_server.py` | 외부 요청, job 큐, 결과 보관 |
-| Cloudflare Tunnel | `cloudflared tunnel run sekai-relay` | 외부 HTTPS 도메인을 relay 서버로 연결 |
+| Cloudflare Tunnel | `cloudflared tunnel run <tunnel-name>` | 외부 HTTPS 도메인을 relay 서버로 연결 |
 | Headless 번역기 | `launch.py --headless-server` | 실제 OCR/번역/인페인트 처리 |
 | Local worker | `local_worker.py` | Relay job을 가져와 로컬 번역기로 처리 |
 
-## 현재 Cloudflare Tunnel 설정
+## Cloudflare Tunnel 설정
 
-현재 설정된 공개 주소:
+공개 주소는 환경 변수로 둡니다.
 
-```text
-https://translator.allen-lee.blog
+```bash
+export BT_RELAY_PUBLIC_URL="https://your-domain.example"
 ```
 
-터널 정보:
+터널 정보 예시:
 
 ```text
-Tunnel name: sekai-relay
-Tunnel ID: 4a760cb3-d701-416d-a14f-8430abdd2833
+Tunnel name: <tunnel-name>
+Tunnel ID: <tunnel-id>
 Config: ~/.cloudflared/config.yml
-Ingress: translator.allen-lee.blog -> http://127.0.0.1:9000
+Ingress: your-domain.example -> http://127.0.0.1:9000
 ```
 
 상태 확인:
 
 ```bash
-curl -sS https://translator.allen-lee.blog/health
+curl -sS "$BT_RELAY_PUBLIC_URL/health"
 ```
 
 정상 응답 예:
 
 ```json
-{"ok":true,"jobs":{"queued":0,"running":0,"done":0,"failed":0,"total":0}}
+{"ok":true,"jobs":{"queued":0,"running":0,"done":0,"failed":0,"total":0},"max_upload_bytes":52428800}
 ```
 
 ## 1. 토큰 준비
@@ -71,6 +71,7 @@ Path(".env.headless").write_text("\n".join([
     f'export BT_CLIENT_TOKEN="client-{secrets.token_urlsafe(32)}"',
     f'export BT_WORKER_TOKEN="worker-{secrets.token_urlsafe(32)}"',
     f'export BT_LOCAL_TOKEN="local-{secrets.token_urlsafe(32)}"',
+    'export BT_RELAY_PUBLIC_URL="https://your-domain.example"',
     "",
 ]), encoding="utf-8")
 PY
@@ -107,7 +108,8 @@ python relay_server.py \
   --port 9000 \
   --storage-dir relay_storage \
   --api-token "$BT_CLIENT_TOKEN" \
-  --worker-token "$BT_WORKER_TOKEN"
+  --worker-token "$BT_WORKER_TOKEN" \
+  --max-upload-mb 50
 ```
 
 로컬 확인:
@@ -121,23 +123,23 @@ curl -sS http://127.0.0.1:9000/health
 Relay 서버를 외부 HTTPS 주소로 노출합니다.
 
 ```bash
-cloudflared tunnel run sekai-relay
+cloudflared tunnel run <tunnel-name>
 ```
 
 외부 확인:
 
 ```bash
-curl -sS https://translator.allen-lee.blog/health
+curl -sS "$BT_RELAY_PUBLIC_URL/health"
 ```
 
 `~/.cloudflared/config.yml`은 다음 형태여야 합니다.
 
 ```yaml
-tunnel: 4a760cb3-d701-416d-a14f-8430abdd2833
-credentials-file: /Users/ijaewon/.cloudflared/4a760cb3-d701-416d-a14f-8430abdd2833.json
+tunnel: <tunnel-id>
+credentials-file: /path/to/<tunnel-id>.json
 
 ingress:
-  - hostname: translator.allen-lee.blog
+  - hostname: your-domain.example
     service: http://127.0.0.1:9000
   - service: http_status:404
 ```
@@ -158,7 +160,8 @@ python launch.py \
   --headless-server \
   --host 127.0.0.1 \
   --port 8000 \
-  --api-token "$BT_LOCAL_TOKEN"
+  --api-token "$BT_LOCAL_TOKEN" \
+  --max-upload-mb 50
 ```
 
 로컬 확인:
@@ -174,7 +177,7 @@ Worker는 relay 서버에서 job을 가져와 로컬 headless 번역기로 처�
 ```bash
 source .env.headless
 python local_worker.py \
-  --relay-url https://translator.allen-lee.blog \
+  --relay-url "$BT_RELAY_PUBLIC_URL" \
   --local-url http://127.0.0.1:8000 \
   --worker-token "$BT_WORKER_TOKEN" \
   --local-token "$BT_LOCAL_TOKEN"
@@ -185,7 +188,7 @@ python local_worker.py \
 ```bash
 source .env.headless
 python local_worker.py \
-  --relay-url https://translator.allen-lee.blog \
+  --relay-url "$BT_RELAY_PUBLIC_URL" \
   --local-url http://127.0.0.1:8000 \
   --worker-token "$BT_WORKER_TOKEN" \
   --local-token "$BT_LOCAL_TOKEN" \
@@ -200,7 +203,7 @@ iOS 단축어처럼 한 번 요청하고 결과 이미지를 바로 받고 싶�
 
 ```bash
 source .env.headless
-curl -sS -X POST "https://translator.allen-lee.blog/translate/raw?filename=input.png&timeout=90" \
+curl -sS -X POST "$BT_RELAY_PUBLIC_URL/translate/raw?filename=input.png&timeout=90" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN" \
   -H "Content-Type: image/png" \
   --data-binary "@input.png" \
@@ -211,7 +214,7 @@ multipart form을 쓰는 클라이언트는 `/translate`도 사용할 수 있습
 
 ```bash
 source .env.headless
-curl -sS -X POST "https://translator.allen-lee.blog/translate?timeout=90" \
+curl -sS -X POST "$BT_RELAY_PUBLIC_URL/translate?timeout=90" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN" \
   -F "file=@input.png" \
   -o result.png
@@ -225,7 +228,7 @@ curl -sS -X POST "https://translator.allen-lee.blog/translate?timeout=90" \
 
 ```bash
 source .env.headless
-curl -sS -X POST "https://translator.allen-lee.blog/jobs/raw?filename=input.png" \
+curl -sS -X POST "$BT_RELAY_PUBLIC_URL/jobs/raw?filename=input.png" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN" \
   -H "Content-Type: image/png" \
   --data-binary "@input.png"
@@ -246,7 +249,7 @@ curl -sS -X POST "https://translator.allen-lee.blog/jobs/raw?filename=input.png"
 
 ```bash
 source .env.headless
-curl -sS -X POST https://translator.allen-lee.blog/jobs \
+curl -sS -X POST "$BT_RELAY_PUBLIC_URL/jobs" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN" \
   -F "file=@input.png"
 ```
@@ -266,7 +269,7 @@ curl -sS -X POST https://translator.allen-lee.blog/jobs \
 
 ```bash
 source .env.headless
-curl -sS https://translator.allen-lee.blog/jobs/abc123 \
+curl -sS "$BT_RELAY_PUBLIC_URL/jobs/abc123" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN"
 ```
 
@@ -283,7 +286,7 @@ failed   실패
 
 ```bash
 source .env.headless
-curl -sS https://translator.allen-lee.blog/jobs/abc123/result \
+curl -sS "$BT_RELAY_PUBLIC_URL/jobs/abc123/result" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN" \
   -o result.png
 ```
@@ -296,34 +299,34 @@ curl -sS https://translator.allen-lee.blog/jobs/abc123/result \
 
 ```bash
 source .env.headless
-python relay_server.py --host 127.0.0.1 --port 9000 --storage-dir relay_storage --api-token "$BT_CLIENT_TOKEN" --worker-token "$BT_WORKER_TOKEN"
+python relay_server.py --host 127.0.0.1 --port 9000 --storage-dir relay_storage --api-token "$BT_CLIENT_TOKEN" --worker-token "$BT_WORKER_TOKEN" --max-upload-mb 50
 ```
 
 터미널 2:
 
 ```bash
-cloudflared tunnel run sekai-relay
+cloudflared tunnel run <tunnel-name>
 ```
 
 터미널 3:
 
 ```bash
 source .env.headless
-python launch.py --headless-server --host 127.0.0.1 --port 8000 --api-token "$BT_LOCAL_TOKEN"
+python launch.py --headless-server --host 127.0.0.1 --port 8000 --api-token "$BT_LOCAL_TOKEN" --max-upload-mb 50
 ```
 
 터미널 4:
 
 ```bash
 source .env.headless
-python local_worker.py --relay-url https://translator.allen-lee.blog --local-url http://127.0.0.1:8000 --worker-token "$BT_WORKER_TOKEN" --local-token "$BT_LOCAL_TOKEN"
+python local_worker.py --relay-url "$BT_RELAY_PUBLIC_URL" --local-url http://127.0.0.1:8000 --worker-token "$BT_WORKER_TOKEN" --local-token "$BT_LOCAL_TOKEN"
 ```
 
 클라이언트:
 
 ```bash
 source .env.headless
-curl -sS -X POST "https://translator.allen-lee.blog/translate/raw?filename=input.png&timeout=90" -H "Authorization: Bearer $BT_CLIENT_TOKEN" -H "Content-Type: image/png" --data-binary "@input.png" -o result.png
+curl -sS -X POST "$BT_RELAY_PUBLIC_URL/translate/raw?filename=input.png&timeout=90" -H "Authorization: Bearer $BT_CLIENT_TOKEN" -H "Content-Type: image/png" --data-binary "@input.png" -o result.png
 ```
 
 ## 8. 운영 메모
@@ -332,6 +335,7 @@ curl -sS -X POST "https://translator.allen-lee.blog/translate/raw?filename=input
 - 상시 운영하려면 macOS `launchd`, `tmux`, `screen`, 또는 별도 서버 프로세스 매니저에 등록하세요.
 - `cloudflared service install`로 시스템 서비스 등록도 가능하지만, 로컬 네트워크/계정 상태에 따라 권한 설정이 필요할 수 있습니다.
 - 외부 공개 주소를 사용할 때는 반드시 `--api-token`과 `--worker-token`을 설정하세요.
+- Relay 서버와 Headless 번역기는 `--max-upload-mb` 또는 `BALLOONTRANS_MAX_UPLOAD_BYTES`로 업로드 크기 제한을 설정할 수 있습니다.
 - Relay 서버에는 원본 이미지와 결과 이미지가 `relay_storage` 아래에 TTL 동안 저장됩니다.
 - 완료된 job은 `--result-ttl` 초 이후 정리됩니다. 기본값은 3600초입니다.
 
@@ -365,7 +369,7 @@ curl -sS http://127.0.0.1:8000/health
 
 ### `502`, `1033`, 또는 Cloudflare 오류
 
-`cloudflared tunnel run sekai-relay`가 꺼졌거나 relay 서버가 꺼진 상태일 가능성이 큽니다.
+`cloudflared tunnel run <tunnel-name>`이 꺼졌거나 relay 서버가 꺼진 상태일 가능성이 큽니다.
 
 ```bash
 cloudflared tunnel ingress validate

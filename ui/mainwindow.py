@@ -873,7 +873,7 @@ class MainWindow(mainwindow_cls):
             if self.drawingPanel.isVisible() and not self.drawingPanel.paint_busy:
                 if self.drawingPanel.currentTool == self.drawingPanel.rectTool:
                     self.drawingPanel.rectPanel.delete_btn.click()
-            elif self.canvas.textEditMode():
+            elif self.canvas.can_delete_textblocks():
                 self.canvas.delete_textblks.emit(0)
 
     def shortcutSelectAll(self):
@@ -900,7 +900,7 @@ class MainWindow(mainwindow_cls):
             self.textPanel.formatpanel.formatBtnGroup.boldBtn.click()
 
     def shortcutDelete(self):
-        if self.canvas.gv.isVisible():
+        if self.canvas.gv.isVisible() and self.canvas.can_delete_textblocks():
             self.canvas.delete_textblks.emit(1)
 
     def shortcutItalic(self):

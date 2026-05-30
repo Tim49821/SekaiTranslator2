@@ -105,6 +105,8 @@ OCR & Translate Selected Area
 * ```Ctrl+Z```, ```Ctrl+Shift+Z``` to undo/redo most operations. (note the undo stack will be cleared after you turn the page)
 * ```T``` to text-editting mode (or the "T" button on the bottom toolbar).
 * ```W``` to activate text block creating mode, then drag the mouse on the canvas with the right button clicked to add a new text block. (see the text editing gif)
+* ```Insert``` or right-click menu -> ```Add text box here``` to add a text block at the current canvas position in text-editing mode.
+* ```Ctrl+D``` deletes selected text blocks; ```Delete``` deletes selected text blocks and recovers the removed image area.
 * ```P``` to image-editting mode.  
 * In the image editing mode, use the slider on the right bottom to control the original image transparency.
 * Disable or enable any automatic modules via titlebar->run, run with all modules disabled will re-letter and re-render all text according to corresponding settings.  

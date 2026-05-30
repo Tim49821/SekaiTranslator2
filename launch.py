@@ -46,6 +46,7 @@ parser.add_argument("--host", default='127.0.0.1', help='host for --headless-ser
 parser.add_argument("--port", default=8000, type=int, help='port for --headless-server')
 parser.add_argument("--api-token", default=os.environ.get('BALLOONTRANS_API_TOKEN', ''), help='optional bearer token for headless server API requests')
 parser.add_argument("--job-result-ttl", default=3600, type=int, help='seconds to keep completed headless server job results')
+parser.add_argument("--max-upload-mb", default=50, type=int, help='maximum image upload size for --headless-server')
 parser.add_argument("--exec_dirs", default='', help='translation queue (project directories) separated by comma')
 parser.add_argument("--ldpi", default=None, type=float, help='logical dots perinch')
 parser.add_argument("--export-translation-txt", action='store_true', help='save translation to txt file once RUN completed')
@@ -340,7 +341,14 @@ def main():
 
     if args.headless_server:
         from headless_server import start_headless_server
-        SERVER = start_headless_server(BT, args.host, args.port, args.api_token, args.job_result_ttl)
+        SERVER = start_headless_server(
+            BT,
+            args.host,
+            args.port,
+            args.api_token,
+            args.job_result_ttl,
+            max_upload_bytes=args.max_upload_mb * 1024 * 1024,
+        )
     sys.exit(app.exec())
 
 def is_amd_gpu():

@@ -779,6 +779,7 @@ class BottomBar(Widget):
         self.texteditChecker.clicked.connect(self.onTextEditCheckerPressed)
         self.textblockChecker = QCheckBox()
         self.textblockChecker.setObjectName('TextblockChecker')
+        self.textblockChecker.setToolTip(self.tr('Enable/disable text block creating mode. Press Insert or use the context menu to add a box.'))
         self.textblockChecker.clicked.connect(self.onTextblockCheckerClicked)
 
         self.settingsBtn = BottomBarToolBtn()

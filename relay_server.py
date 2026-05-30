@@ -9,8 +9,18 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
+
+from utils.api_uploads import (
+    InvalidImageUpload,
+    UploadTooLarge,
+    copy_upload_file,
+    max_upload_bytes_from_env,
+    upload_too_large_message,
+    validate_image_file,
+    write_upload_bytes,
+)
 
 
 IMG_EXT = {".bmp", ".jpg", ".png", ".jpeg", ".webp", ".jxl"}
@@ -70,10 +80,11 @@ class RelayJob:
 
 
 class RelayJobStore:
-    def __init__(self, storage_dir: str, result_ttl_seconds: int):
+    def __init__(self, storage_dir: str, result_ttl_seconds: int, max_upload_bytes: int):
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.result_ttl_seconds = max(result_ttl_seconds, 1)
+        self.max_upload_bytes = max(max_upload_bytes, 1)
         self._jobs = {}
         self._lock = threading.Lock()
 
@@ -86,10 +97,8 @@ class RelayJobStore:
         input_path = job_dir / f"input{ext}"
 
         try:
-            with input_path.open("wb") as out_file:
-                shutil.copyfileobj(file.file, out_file)
-            if input_path.stat().st_size == 0:
-                raise ValueError("Uploaded file is empty.")
+            copy_upload_file(file.file, input_path, self.max_upload_bytes)
+            validate_image_file(input_path)
         except Exception:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
@@ -117,9 +126,8 @@ class RelayJobStore:
         input_path = job_dir / f"input{ext}"
 
         try:
-            input_path.write_bytes(content)
-            if input_path.stat().st_size == 0:
-                raise ValueError("Uploaded file is empty.")
+            write_upload_bytes(content, input_path, self.max_upload_bytes)
+            validate_image_file(input_path)
         except Exception:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
@@ -256,15 +264,45 @@ def make_auth_dependency(token: str):
     return require_auth
 
 
-def create_app(storage_dir: str, api_token: str = "", worker_token: str = "", result_ttl_seconds: int = 3600):
-    store = RelayJobStore(storage_dir, result_ttl_seconds)
+def raise_upload_http_exception(exc: Exception) -> None:
+    if isinstance(exc, UploadTooLarge):
+        raise HTTPException(status_code=413, detail=str(exc))
+    if isinstance(exc, InvalidImageUpload):
+        raise HTTPException(status_code=400, detail=str(exc))
+    raise HTTPException(status_code=400, detail=str(exc))
+
+
+def create_app(
+    storage_dir: str,
+    api_token: str = "",
+    worker_token: str = "",
+    result_ttl_seconds: int = 3600,
+    max_upload_bytes: int = None,
+):
+    max_upload_bytes = max_upload_bytes or max_upload_bytes_from_env()
+    store = RelayJobStore(storage_dir, result_ttl_seconds, max_upload_bytes)
     require_client_auth = make_auth_dependency(api_token)
     require_worker_auth = make_auth_dependency(worker_token or api_token)
     app = FastAPI(title="BalloonsTranslator Relay API")
 
+    @app.middleware("http")
+    async def reject_large_requests(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH"}:
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > max_upload_bytes:
+                        return JSONResponse(
+                            status_code=413,
+                            content={"detail": upload_too_large_message(max_upload_bytes)},
+                        )
+                except ValueError:
+                    pass
+        return await call_next(request)
+
     @app.get("/health")
     def health():
-        return {"ok": True, "jobs": store.stats()}
+        return {"ok": True, "jobs": store.stats(), "max_upload_bytes": max_upload_bytes}
 
     @app.post("/translate")
     def translate_sync(
@@ -278,8 +316,8 @@ def create_app(storage_dir: str, api_token: str = "", worker_token: str = "", re
             raise HTTPException(status_code=400, detail="Unsupported image type.")
         try:
             job = store.submit(file, ext)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
+            raise_upload_http_exception(exc)
 
         completed = store.wait_for_terminal(job.job_id, timeout, poll_interval)
         if completed is None:
@@ -302,8 +340,8 @@ def create_app(storage_dir: str, api_token: str = "", worker_token: str = "", re
             raise HTTPException(status_code=400, detail="Unsupported image type.")
         try:
             job = store.submit_bytes(content, filename, ext)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
+            raise_upload_http_exception(exc)
 
         completed = store.wait_for_terminal(job.job_id, timeout, poll_interval)
         if completed is None:
@@ -319,8 +357,8 @@ def create_app(storage_dir: str, api_token: str = "", worker_token: str = "", re
             raise HTTPException(status_code=400, detail="Unsupported image type.")
         try:
             job = store.submit(file, ext)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
+            raise_upload_http_exception(exc)
         return job.to_dict()
 
     @app.post("/jobs/raw", status_code=202)
@@ -335,8 +373,8 @@ def create_app(storage_dir: str, api_token: str = "", worker_token: str = "", re
             raise HTTPException(status_code=400, detail="Unsupported image type.")
         try:
             job = store.submit_bytes(content, filename, ext)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
+            raise_upload_http_exception(exc)
         return job.to_dict()
 
     @app.get("/jobs/{job_id}")
@@ -388,11 +426,12 @@ def create_app(storage_dir: str, api_token: str = "", worker_token: str = "", re
             raise HTTPException(status_code=404, detail="Job not found.")
         ext = upload_extension(file.filename, file.content_type) or ".png"
         result_path = Path(job.job_dir) / f"result{ext}"
-        with result_path.open("wb") as out_file:
-            shutil.copyfileobj(file.file, out_file)
-        if result_path.stat().st_size == 0:
+        try:
+            copy_upload_file(file.file, result_path, max_upload_bytes)
+            validate_image_file(result_path)
+        except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
             result_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail="Result file is empty.")
+            raise_upload_http_exception(exc)
         completed = store.complete(job_id, str(result_path), file.content_type or media_type_for_path(str(result_path)))
         return completed.to_dict()
 
@@ -420,12 +459,19 @@ def parse_args():
     parser.add_argument("--api-token", default=os.environ.get("BALLOONTRANS_RELAY_API_TOKEN", os.environ.get("BALLOONTRANS_API_TOKEN", "")))
     parser.add_argument("--worker-token", default=os.environ.get("BALLOONTRANS_RELAY_WORKER_TOKEN", ""))
     parser.add_argument("--result-ttl", default=3600, type=int)
+    parser.add_argument("--max-upload-mb", default=50, type=int)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    app = create_app(args.storage_dir, args.api_token, args.worker_token, args.result_ttl)
+    app = create_app(
+        args.storage_dir,
+        args.api_token,
+        args.worker_token,
+        args.result_ttl,
+        max_upload_bytes=args.max_upload_mb * 1024 * 1024,
+    )
     uvicorn.run(app, host=args.host, port=args.port)
 
 
