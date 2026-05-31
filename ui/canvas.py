@@ -859,7 +859,12 @@ class Canvas(QGraphicsScene):
 
     @property
     def painting(self):
-        return self.image_edit_mode in {ImageEditMode.PenTool, ImageEditMode.InpaintTool, ImageEditMode.EraserTool}
+        return self.image_edit_mode in {
+            ImageEditMode.PenTool,
+            ImageEditMode.InpaintTool,
+            ImageEditMode.EraserTool,
+            ImageEditMode.RestoreTool,
+        }
 
     def setMaskTransparencyBySlider(self, slider_value: int):
         self.setMaskTransparency(slider_value / 100)

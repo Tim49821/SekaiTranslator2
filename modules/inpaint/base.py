@@ -1,11 +1,11 @@
 import numpy as np
 import cv2
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from collections import OrderedDict
 import sys
 
 from utils.registry import Registry
-from utils.textblock_mask import extract_ballon_mask
+from utils.textblock_mask import extract_ballon_mask, refine_inpaint_mask_quality
 from utils.imgproc_utils import enlarge_window
 
 from ..base import BaseModule, DEFAULT_DEVICE, soft_empty_cache, DEVICE_SELECTOR, GPUINTENSIVE_SET, TORCH_DTYPE_MAP, BF16_SUPPORTED
@@ -38,6 +38,66 @@ def inpaint_handle_alpha_channel(original_alpha, mask):
                 result_alpha[inpainted_mask] = median_surrounding_alpha
 
     return result_alpha
+
+
+def _clip_xyxy(xyxy, im_w: int, im_h: int) -> List[int]:
+    rect = np.array(xyxy, dtype=np.float64)
+    rect[[0, 2]] = np.clip(rect[[0, 2]], 0, im_w)
+    rect[[1, 3]] = np.clip(rect[[1, 3]], 0, im_h)
+    x1, y1, x2, y2 = rect.astype(np.int64).tolist()
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [x1, y1, x2, y2]
+
+
+def _rects_touch_or_overlap(a: List[int], b: List[int], margin: int = 0) -> bool:
+    return not (
+        a[2] + margin < b[0]
+        or b[2] + margin < a[0]
+        or a[3] + margin < b[1]
+        or b[3] + margin < a[1]
+    )
+
+
+def _merge_rects(a: List[int], b: List[int]) -> List[int]:
+    return [
+        min(a[0], b[0]),
+        min(a[1], b[1]),
+        max(a[2], b[2]),
+        max(a[3], b[3]),
+    ]
+
+
+def _cluster_textblock_windows(textblock_list: List[TextBlock], im_w: int, im_h: int) -> List[Tuple[List[int], List[List[int]]]]:
+    clusters: List[Tuple[List[int], List[List[int]]]] = []
+    if not textblock_list:
+        return clusters
+
+    for blk in textblock_list:
+        xyxy = _clip_xyxy(blk.xyxy, im_w, im_h)
+        if xyxy is None:
+            continue
+        xyxy_e = enlarge_window(xyxy, im_w, im_h, ratio=1.7)
+        current_rect = _clip_xyxy(xyxy_e, im_w, im_h)
+        if current_rect is None:
+            continue
+        current_blocks = [xyxy]
+
+        merged = True
+        while merged:
+            merged = False
+            for ii, (cluster_rect, cluster_blocks) in enumerate(clusters):
+                if _rects_touch_or_overlap(current_rect, cluster_rect):
+                    current_rect = _merge_rects(current_rect, cluster_rect)
+                    current_blocks.extend(cluster_blocks)
+                    clusters.pop(ii)
+                    merged = True
+                    break
+
+        clusters.append((current_rect, current_blocks))
+
+    clusters.sort(key=lambda item: (item[0][1], item[0][0]))
+    return clusters
 
 class InpainterBase(BaseModule):
 
@@ -82,10 +142,17 @@ class InpainterBase(BaseModule):
                 raise e
 
     def inpaint(self, img: np.ndarray, mask: np.ndarray, textblock_list: List[TextBlock] = None, check_need_inpaint: bool = False) -> np.ndarray:
-        
-        if not self.all_model_loaded():
-            self.load_model()
-        
+        if mask is None:
+            return img.copy()
+
+        work_mask = np.ascontiguousarray(mask.copy())
+        if not np.any(work_mask > 0):
+            return img.copy()
+
+        work_mask = refine_inpaint_mask_quality(work_mask)
+        if not np.any(work_mask > 0):
+            return img.copy()
+
         # Handle RGBA images by preserving alpha channel
         original_alpha = None
         if len(img.shape) == 3 and img.shape[2] == 4:
@@ -93,10 +160,14 @@ class InpainterBase(BaseModule):
             img_rgb = img[:, :, :3]  # Use only RGB for inpainting
         else:
             img_rgb = img
+
+        def ensure_model_loaded():
+            if not self.all_model_loaded():
+                self.load_model()
         
         if not self.inpaint_by_block or textblock_list is None:
             if check_need_inpaint:
-                ballon_msk, non_text_msk = extract_ballon_mask(img_rgb, mask)
+                ballon_msk, non_text_msk = extract_ballon_mask(img_rgb, work_mask)
                 if ballon_msk is not None:
                     non_text_region = np.where(non_text_msk > 0)
                     non_text_px = img_rgb[non_text_region]
@@ -111,10 +182,11 @@ class InpainterBase(BaseModule):
                         if original_alpha is not None:
                             return np.concatenate([result_rgb, original_alpha], axis=2)
                         return result_rgb
-            result_rgb = self.memory_safe_inpaint(img_rgb, mask, textblock_list)
+            ensure_model_loaded()
+            result_rgb = self.memory_safe_inpaint(img_rgb, work_mask, textblock_list)
             # Recombine with alpha if original was RGBA
             if original_alpha is not None:
-                result_alpha = inpaint_handle_alpha_channel(original_alpha, mask)
+                result_alpha = inpaint_handle_alpha_channel(original_alpha, work_mask)
                 return np.concatenate([result_rgb, result_alpha], axis=2)
             return result_rgb
         else:
@@ -122,13 +194,23 @@ class InpainterBase(BaseModule):
             inpainted = np.copy(img_rgb)
             
             # Preserve original mask for transparency analysis
-            original_mask = mask.copy()
+            original_mask = work_mask.copy()
+            clusters = _cluster_textblock_windows(textblock_list, im_w, im_h)
+
+            if len(clusters) == 0:
+                ensure_model_loaded()
+                result_rgb = self.memory_safe_inpaint(img_rgb, work_mask, textblock_list)
+                if original_alpha is not None:
+                    result_alpha = inpaint_handle_alpha_channel(original_alpha, original_mask)
+                    return np.concatenate([result_rgb, result_alpha], axis=2)
+                return result_rgb
             
-            for blk in textblock_list:
-                xyxy = blk.xyxy
-                xyxy_e = enlarge_window(xyxy, im_w, im_h, ratio=1.7)
+            for xyxy_e, _ in clusters:
                 im = inpainted[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]]
-                msk = mask[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]]
+                msk = work_mask[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]]
+                if not np.any(msk > 0):
+                    continue
+
                 need_inpaint = True
                 if self.check_need_inpaint or check_need_inpaint:
                     ballon_msk, non_text_msk = extract_ballon_mask(im, msk)
@@ -148,9 +230,8 @@ class InpainterBase(BaseModule):
                         # cv2.waitKey(0)
                 
                 if need_inpaint:
+                    ensure_model_loaded()
                     inpainted[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]] = self.memory_safe_inpaint(im, msk)
-
-                mask[xyxy[1]:xyxy[3], xyxy[0]:xyxy[2]] = 0
             
             # Recombine with alpha if original was RGBA
             if original_alpha is not None:

@@ -163,6 +163,8 @@ class DrawPanelConfig(Config):
     pentool_shape: int = 0
     erasertool_width: float = 30.
     erasertool_shape: int = 0
+    restoretool_width: float = 30.
+    restoretool_shape: int = 0
     inpainter_width: float = 30.
     inpainter_shape: int = 0
     current_tool: int = 0

@@ -795,7 +795,7 @@ class MainWindow(mainwindow_cls):
         shortcutBrushUp = QShortcut(QKeySequence("]"), self)
         shortcutBrushUp.activated.connect(self.shortcutBrushUp)
 
-        drawpanel_shortcuts = {'hand': 'H', 'rect': 'R', 'inpaint': 'J', 'pen': 'B', 'eraser': 'E'}
+        drawpanel_shortcuts = {'hand': 'H', 'rect': 'R', 'inpaint': 'J', 'restore': 'O', 'pen': 'B', 'eraser': 'E'}
         for tool_name, shortcut_key in drawpanel_shortcuts.items():
             shortcut = QShortcut(QKeySequence(shortcut_key), self)
             shortcut.activated.connect(partial(self.drawingPanel.shortcutSetCurrentToolByName, tool_name))

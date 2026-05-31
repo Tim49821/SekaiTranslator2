@@ -1,12 +1,136 @@
 import unittest
+from types import SimpleNamespace
+
+import numpy as np
+from PIL import Image
 
 from modules.inpaint.base import InpainterBase
+from modules.inpaint.inpaint_sdxl import SDXLInpainter
+from utils.textblock import TextBlock
+from utils.textblock_mask import refine_inpaint_mask_quality
+
+
+class CountingInpainter(InpainterBase):
+    check_need_inpaint = False
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.calls = 0
+        self.call_shapes = []
+
+    def _inpaint(self, img, mask, textblock_list=None):
+        self.calls += 1
+        self.call_shapes.append(img.shape[:2])
+        result = img.copy()
+        result[mask > 0] = np.array([10, 20, 30], dtype=np.uint8)
+        return result
+
+    def moveToDevice(self, device: str, precision: str = None):
+        return None
+
+
+class FakeSDXLPipeline:
+    def __init__(self):
+        self.calls = []
+        self.device = "cpu"
+
+    def to(self, device):
+        self.device = device
+        return self
+
+    def __call__(self, **kwargs):
+        image = np.array(kwargs["image"].convert("RGB"))
+        mask = np.array(kwargs["mask_image"])
+        self.calls.append(kwargs)
+        output = np.zeros_like(image)
+        output[:] = np.array([201, 31, 47], dtype=np.uint8)
+        return SimpleNamespace(images=[Image.fromarray(output)])
 
 
 class InpainterBaseTest(unittest.TestCase):
     def test_base_move_to_device_requires_implementation(self):
         with self.assertRaises(NotImplementedError):
             InpainterBase().moveToDevice("cpu")
+
+    def test_inpaint_does_not_mutate_input_mask(self):
+        inpainter = CountingInpainter()
+        img = np.zeros((12, 12, 3), dtype=np.uint8)
+        mask = np.zeros((12, 12), dtype=np.uint8)
+        mask[4:8, 4:8] = 255
+        original_mask = mask.copy()
+
+        inpainter.inpaint(img, mask)
+
+        np.testing.assert_array_equal(mask, original_mask)
+
+    def test_empty_mask_skips_model_call(self):
+        inpainter = CountingInpainter()
+        img = np.full((8, 8, 3), 77, dtype=np.uint8)
+        mask = np.zeros((8, 8), dtype=np.uint8)
+
+        result = inpainter.inpaint(img, mask)
+
+        self.assertEqual(inpainter.calls, 0)
+        np.testing.assert_array_equal(result, img)
+
+    def test_rgba_alpha_is_preserved_for_opaque_regions(self):
+        inpainter = CountingInpainter()
+        img = np.zeros((10, 10, 4), dtype=np.uint8)
+        img[..., :3] = 5
+        img[..., 3] = 255
+        mask = np.zeros((10, 10), dtype=np.uint8)
+        mask[2:6, 2:6] = 255
+
+        result = inpainter.inpaint(img, mask)
+
+        self.assertEqual(result.shape[2], 4)
+        np.testing.assert_array_equal(result[..., 3], img[..., 3])
+
+    def test_adjacent_textblocks_are_inpainted_as_one_cluster(self):
+        inpainter = CountingInpainter()
+        img = np.zeros((64, 64, 3), dtype=np.uint8)
+        mask = np.zeros((64, 64), dtype=np.uint8)
+        mask[20:28, 20:28] = 255
+        mask[20:28, 30:38] = 255
+        blocks = [TextBlock([20, 20, 28, 28]), TextBlock([30, 20, 38, 28])]
+
+        inpainter.inpaint(img, mask, blocks)
+
+        self.assertEqual(inpainter.calls, 1)
+
+    def test_refine_inpaint_mask_quality_cleans_fills_and_limits_to_balloon(self):
+        mask = np.zeros((14, 14), dtype=np.uint8)
+        mask[1, 1] = 255
+        mask[5:10, 5:10] = 255
+        mask[7, 7] = 0
+        balloon = np.zeros_like(mask)
+        balloon[:, :12] = 255
+
+        refined = refine_inpaint_mask_quality(mask, balloon_mask=balloon, max_dilate=2)
+
+        self.assertEqual(refined[1, 1], 0)
+        self.assertEqual(refined[7, 7], 255)
+        self.assertEqual(refined[:, 13].sum(), 0)
+
+    def test_sdxl_inpaint_uses_square_crop_resized_mask_and_masked_blend(self):
+        inpainter = SDXLInpainter()
+        inpainter.model = FakeSDXLPipeline()
+        inpainter.set_param_value("inpaint_size", 64)
+        inpainter.set_param_value("feather_radius", 0)
+        inpainter.set_param_value("context_scale", 2.0)
+        img = np.zeros((40, 50, 3), dtype=np.uint8)
+        img[..., 1] = 100
+        mask = np.zeros((40, 50), dtype=np.uint8)
+        mask[12:18, 20:26] = 255
+
+        result = inpainter._inpaint(img, mask)
+        call = inpainter.model.calls[0]
+
+        self.assertEqual(call["image"].size, (64, 64))
+        self.assertEqual(call["mask_image"].size, (64, 64))
+        self.assertEqual(np.array(call["mask_image"]).max(), 255)
+        self.assertTrue(np.all(result[mask > 0] == np.array([201, 31, 47], dtype=np.uint8)))
+        self.assertTrue(np.all(result[mask == 0] == img[mask == 0]))
 
 
 if __name__ == "__main__":

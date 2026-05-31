@@ -17,6 +17,7 @@ class ImageEditMode:
     PenTool = 2
     RectTool = 3
     EraserTool = 4
+    RestoreTool = 5
 
 class PenShape:
     Circle = 0

@@ -19,9 +19,9 @@ except ImportError:
     from qtpy.QtWidgets import QApplication, QWidget
 
 from ui.canvas import Canvas
-from ui.drawing_commands import InpaintUndoCommand, StrokeItemUndoCommand
+from ui.drawing_commands import InpaintHardResetCommand, InpaintUndoCommand, StrokeItemUndoCommand
 from ui.drawingpanel import DrawingPanel
-from ui.image_edit import DrawingLayer, ImageEditMode, StrokeImgItem
+from ui.image_edit import DrawingLayer, ImageEditMode, PenShape, StrokeImgItem
 from utils.config import DrawPanelConfig
 
 
@@ -51,6 +51,10 @@ class FakeTextProject:
     @property
     def inpainted_valid(self):
         return True
+
+    @property
+    def mask_valid(self):
+        return self.mask_array is not None
 
 
 class FakeCanvas:
@@ -125,6 +129,23 @@ class PaintModeTest(unittest.TestCase):
         command.undo()
         np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[1:4, 1:4], np.full((3, 3, 3), 7, dtype=np.uint8))
         np.testing.assert_array_equal(canvas.imgtrans_proj.mask_array[1:4, 1:4], np.full((3, 3), 10, dtype=np.uint8))
+        self.assertEqual(canvas.update_count, 2)
+
+    def test_inpaint_hard_reset_command_restores_whole_page_and_mask(self):
+        canvas = FakeCanvas()
+        canvas.imgtrans_proj.img_array = np.full((6, 6, 3), 4, dtype=np.uint8)
+        canvas.imgtrans_proj.inpainted_array[1:5, 1:5] = 9
+        canvas.imgtrans_proj.mask_array[1:5, 1:5] = 255
+
+        command = InpaintHardResetCommand(canvas)
+
+        command.redo()
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array, canvas.imgtrans_proj.img_array)
+        self.assertEqual(canvas.imgtrans_proj.mask_array.sum(), 0)
+
+        command.undo()
+        self.assertEqual(canvas.imgtrans_proj.inpainted_array[2, 2, 0], 9)
+        self.assertEqual(canvas.imgtrans_proj.mask_array[2, 2], 255)
         self.assertEqual(canvas.update_count, 2)
 
     def test_stroke_item_undo_command_updates_layer_without_scene(self):
@@ -231,6 +252,84 @@ class PaintModeTest(unittest.TestCase):
         self.assertTrue(canvas.painting)
         self.assertEqual(canvas.erasing_pen.widthF(), 17)
         self.assertEqual(canvas.painting_shape, 1)
+
+    def test_restore_tool_is_selectable_painting_tool(self):
+        canvas = Canvas()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        config = DrawPanelConfig(
+            restoretool_width=19,
+            restoretool_shape=1,
+            current_tool=ImageEditMode.RestoreTool,
+        )
+
+        panel.set_config(config)
+
+        self.assertIs(panel.currentTool, panel.restoreTool)
+        self.assertEqual(canvas.image_edit_mode, ImageEditMode.RestoreTool)
+        self.assertTrue(canvas.painting)
+        self.assertEqual(canvas.painting_pen.widthF(), 19)
+        self.assertEqual(canvas.painting_shape, 1)
+        self.assertIs(panel.inpaintHardResetBtn.parent(), panel.restoreConfigPanel)
+
+    def test_restore_tool_restores_inpainted_pixels_to_original(self):
+        canvas = Canvas()
+        canvas.editor_index = 0
+        canvas.imgtrans_proj = FakeTextProject()
+        canvas.imgtrans_proj.img_array[:, :] = [10, 20, 30]
+        canvas.imgtrans_proj.inpainted_array = np.copy(canvas.imgtrans_proj.img_array)
+        canvas.imgtrans_proj.inpainted_array[8:16, 8:16] = [90, 91, 92]
+        canvas.imgtrans_proj.mask_array[8:16, 8:16] = 255
+        canvas.updateCanvas()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        panel.set_config(DrawPanelConfig(
+            restoretool_width=5,
+            restoretool_shape=PenShape.Rectangle,
+            current_tool=ImageEditMode.RestoreTool,
+        ))
+        stroke = StrokeImgItem(
+            canvas.painting_pen,
+            QPointF(12, 12),
+            canvas.img_window_size(),
+            shape=PenShape.Rectangle,
+        )
+        stroke.setParentItem(canvas.baseLayer)
+
+        panel.on_finish_painting(stroke)
+
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[12, 12], [10, 20, 30])
+        self.assertEqual(canvas.imgtrans_proj.mask_array[12, 12], 0)
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[8, 8], [90, 91, 92])
+        self.assertEqual(canvas.imgtrans_proj.mask_array[8, 8], 255)
+
+        canvas.undo()
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[12, 12], [90, 91, 92])
+        self.assertEqual(canvas.imgtrans_proj.mask_array[12, 12], 255)
+
+        canvas.redo()
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[12, 12], [10, 20, 30])
+        self.assertEqual(canvas.imgtrans_proj.mask_array[12, 12], 0)
+
+    def test_hard_reset_inpaint_is_undoable_from_panel(self):
+        canvas = Canvas()
+        canvas.editor_index = 0
+        canvas.imgtrans_proj = FakeTextProject()
+        canvas.imgtrans_proj.img_array[:, :] = [4, 5, 6]
+        canvas.imgtrans_proj.inpainted_array[8:16, 8:16] = [90, 91, 92]
+        canvas.imgtrans_proj.mask_array[8:16, 8:16] = 255
+        canvas.updateCanvas()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+
+        self.assertTrue(panel.hardResetInpaint())
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array, canvas.imgtrans_proj.img_array)
+        self.assertEqual(canvas.imgtrans_proj.mask_array.sum(), 0)
+
+        canvas.undo()
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[12, 12], [90, 91, 92])
+        self.assertEqual(canvas.imgtrans_proj.mask_array[12, 12], 255)
+
+        canvas.redo()
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array, canvas.imgtrans_proj.img_array)
+        self.assertEqual(canvas.imgtrans_proj.mask_array.sum(), 0)
 
 
 if __name__ == "__main__":

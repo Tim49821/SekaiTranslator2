@@ -718,9 +718,42 @@ QScrollBar::add-line {
 
 .IncrementalBtn#FsizeIncrementUp {
     border-image: url(icons/incre_up.svg) 0 0 0 0 stretch stretch;
+    width: 13px;
+    height: 13px;
+    min-width: 13px;
+    max-width: 13px;
+    min-height: 13px;
+    max-height: 13px;
+    padding: 0px;
+    border: none;
 }
 .IncrementalBtn#FsizeIncrementDown {
     border-image: url(icons/incre_down.svg) 0 0 0 0 stretch stretch;
+    width: 13px;
+    height: 13px;
+    min-width: 13px;
+    max-width: 13px;
+    min-height: 13px;
+    max-height: 13px;
+    padding: 0px;
+    border: none;
+}
+
+QPushButton#FsizeStepHalfUp,
+QPushButton#FsizeStepOneUp,
+QPushButton#FsizeStepHalfDown,
+QPushButton#FsizeStepOneDown {
+    width: 26px;
+    height: 13px;
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 13px;
+    max-height: 13px;
+    padding: 0px;
+    margin: 0px;
+    font-size: 8px;
+    border-radius: 1px;
+    border: 1px solid @borderColor;
 }
 
 .FadeLabel {
@@ -803,6 +836,18 @@ DrawToolCheckBox#DrawInpaintTool::indicator:hover {
 
 DrawToolCheckBox#DrawInpaintTool::indicator:checked {
     image: url(icons/drawingtools_inpaint.svg);
+}
+
+DrawToolCheckBox#DrawRestoreTool::indicator {
+    image: url(icons/drawingtools_restore.svg);
+}
+
+DrawToolCheckBox#DrawRestoreTool::indicator:hover {
+    image: url(icons/drawingtools_restore_activate.svg);
+}
+
+DrawToolCheckBox#DrawRestoreTool::indicator:checked {
+    image: url(icons/drawingtools_restore.svg);
 }
 
 DrawToolCheckBox#DrawPenTool::indicator {

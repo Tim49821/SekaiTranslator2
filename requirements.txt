@@ -11,6 +11,9 @@ torch
 torchvision
 transformers==4.57.1
 huggingface_hub>=0.34.0
+diffusers>=0.38,<0.39
+accelerate>=1.0,<2
+safetensors>=0.8.0rc0
 protobuf
 mecab-python3; sys_platform == 'darwin'
 fugashi

@@ -9,7 +9,7 @@ from qtpy.QtGui import QFocusEvent, QMouseEvent, QTextCursor, QKeyEvent
 from utils import shared
 from utils import config as C
 from utils.fontformat import FontFormat, px2pt, LineSpacingType
-from .custom_widget import Widget, ColorPickerLabel, ClickableLabel, CheckableLabel, TextCheckerLabel, AlignmentChecker, QFontChecker, SizeComboBox, SizeControlLabel
+from .custom_widget import Widget, ColorPickerLabel, ClickableLabel, CheckableLabel, TextCheckerLabel, AlignmentChecker, QFontChecker, SizeComboBox, SizeControlLabel, NoBorderPushBtn
 from .textitem import TextBlkItem
 from .text_advanced_format import TextAdvancedFormatPanel
 from .text_style_presets import TextStylePresetPanel
@@ -50,6 +50,13 @@ class IncrementalBtn(QPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setFixedSize(13, 13)
+
+
+class FontSizeStepBtn(NoBorderPushBtn):
+    def __init__(self, text: str, step: float, *args, **kwargs):
+        super().__init__(text, *args, **kwargs)
+        self.step = step
+        self.setFixedSize(26, 13)
 
 
 class AlignmentBtnGroup(QFrame):
@@ -144,6 +151,20 @@ class FontSizeBox(QFrame):
         self.downBtn.setObjectName("FsizeIncrementDown")
         self.upBtn.clicked.connect(self.onUpBtnClicked)
         self.downBtn.clicked.connect(self.onDownBtnClicked)
+        self.upHalfBtn = FontSizeStepBtn("+0.5", 0.5, self)
+        self.upHalfBtn.setObjectName("FsizeStepHalfUp")
+        self.upOneBtn = FontSizeStepBtn("+1", 1, self)
+        self.upOneBtn.setObjectName("FsizeStepOneUp")
+        self.downHalfBtn = FontSizeStepBtn("-0.5", -0.5, self)
+        self.downHalfBtn.setObjectName("FsizeStepHalfDown")
+        self.downOneBtn = FontSizeStepBtn("-1", -1, self)
+        self.downOneBtn.setObjectName("FsizeStepOneDown")
+        for btn in (self.upHalfBtn, self.upOneBtn, self.downHalfBtn, self.downOneBtn):
+            btn.clicked.connect(self.onStepBtnClicked)
+        self.upHalfBtn.setToolTip(self.tr("Increase font size by 0.5"))
+        self.upOneBtn.setToolTip(self.tr("Increase font size by 1"))
+        self.downHalfBtn.setToolTip(self.tr("Decrease font size by 0.5"))
+        self.downOneBtn.setToolTip(self.tr("Decrease font size by 1"))
         self.fcombobox = SizeComboBox([1, 1000], 'font_size', self)
         self.fcombobox.addItems([
             "5", "5.5", "6.5", "7.5", "8", "9", "10", "10.5",
@@ -158,53 +179,96 @@ class FontSizeBox(QFrame):
         vlayout.addWidget(self.downBtn)
         vlayout.setContentsMargins(0, 0, 0, 0)
         vlayout.setSpacing(0)
-        hlayout.addLayout(vlayout)
-        hlayout.addWidget(self.fcombobox)
-        hlayout.setSpacing(3)
+        vlayout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        step_layout = QVBoxLayout()
+        step_up_layout = QHBoxLayout()
+        step_up_layout.addWidget(self.upHalfBtn)
+        step_up_layout.addWidget(self.upOneBtn)
+        step_up_layout.setContentsMargins(0, 0, 0, 0)
+        step_up_layout.setSpacing(0)
+        step_down_layout = QHBoxLayout()
+        step_down_layout.addWidget(self.downHalfBtn)
+        step_down_layout.addWidget(self.downOneBtn)
+        step_down_layout.setContentsMargins(0, 0, 0, 0)
+        step_down_layout.setSpacing(0)
+        step_layout.addLayout(step_up_layout)
+        step_layout.addLayout(step_down_layout)
+        step_layout.setContentsMargins(0, 0, 0, 0)
+        step_layout.setSpacing(0)
+        step_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        size_control_layout = QHBoxLayout()
+        size_control_layout.addLayout(vlayout)
+        size_control_layout.addWidget(self.fcombobox)
+        size_control_layout.setContentsMargins(0, 0, 0, 0)
+        size_control_layout.setSpacing(0)
+        hlayout.addLayout(step_layout)
+        hlayout.addLayout(size_control_layout)
+        hlayout.setSpacing(1)
         hlayout.setContentsMargins(0, 0, 0, 0)
 
     def getFontSize(self) -> str:
         return self.fcombobox.currentText()
 
-    def onUpBtnClicked(self):
-        raito = 1.25
+    def currentFontSize(self):
         size = self.getFontSize()
-        multi_size=False
+        multi_size = False
         if "+" in size:
             size = size.strip("+")
-            multi_size=True
-        size = float(size)
+            multi_size = True
+        try:
+            return float(size), multi_size
+        except ValueError:
+            return None, multi_size
+
+    def formatFontSizeText(self, size: float, multi_size: bool = False) -> str:
+        rounded_size = round(size, 1)
+        if int(rounded_size) == rounded_size:
+            text = str(int(rounded_size))
+        else:
+            text = f"{rounded_size:.1f}"
+        if multi_size:
+            text += "+"
+        return text
+
+    def applyFontSizeChange(self, newsize: float, size: float, multi_size: bool, rel_size: float = None):
+        newsize = max(1, min(1000, newsize))
+        if newsize == size:
+            return
+        if not multi_size:
+            self.param_changed.emit('font_size', newsize)
+            self.fcombobox.setCurrentText(self.formatFontSizeText(newsize))
+        elif size > 0:
+            if rel_size is None:
+                rel_size = newsize / size
+            self.param_changed.emit('rel_font_size', rel_size)
+            self.fcombobox.setCurrentText(self.formatFontSizeText(newsize, multi_size=True))
+
+    def onUpBtnClicked(self):
+        raito = 1.25
+        size, multi_size = self.currentFontSize()
+        if size is None:
+            return
         newsize = int(round(size * raito))
         if newsize == size:
             newsize += 1
-        newsize = min(1000, newsize)
-        if newsize != size:
-            if not multi_size:
-                self.param_changed.emit('font_size', newsize)
-                self.fcombobox.setCurrentText(str(newsize))
-            else:
-                self.param_changed.emit('rel_font_size', raito)
-                self.fcombobox.setCurrentText(str(newsize)+"+")
+        self.applyFontSizeChange(newsize, size, multi_size, rel_size=raito)
 
     def onDownBtnClicked(self):
         raito = 0.75
-        size = self.getFontSize()
-        multi_size=False
-        if "+" in size:
-            size = size.strip("+")
-            multi_size=True
-        size = float(size)
+        size, multi_size = self.currentFontSize()
+        if size is None:
+            return
         newsize = int(round(size * raito))
         if newsize == size:
             newsize -= 1
-        newsize = max(1, newsize)
-        if newsize != size:
-            if not multi_size:
-                self.param_changed.emit('font_size', newsize)
-                self.fcombobox.setCurrentText(str(newsize))
-            else:
-                self.param_changed.emit('rel_font_size', raito)
-                self.fcombobox.setCurrentText(str(newsize)+"+")
+        self.applyFontSizeChange(newsize, size, multi_size, rel_size=raito)
+
+    def onStepBtnClicked(self):
+        btn = self.sender()
+        size, multi_size = self.currentFontSize()
+        if size is None or not isinstance(btn, FontSizeStepBtn):
+            return
+        self.applyFontSizeChange(size + btn.step, size, multi_size)
     
 
 class FontFamilyComboBox(QFontComboBox):

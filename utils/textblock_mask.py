@@ -362,6 +362,86 @@ def existing_mask(img, mask: np.ndarray):
     return mask, mask, bub_dict
 
 
+def _remove_small_mask_components(mask: np.ndarray, min_area: int) -> np.ndarray:
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8, cv2.CV_32S)
+    if num_labels <= 1:
+        return mask
+
+    cleaned = np.zeros_like(mask)
+    for label_index in range(1, num_labels):
+        if stats[label_index, cv2.CC_STAT_AREA] >= min_area:
+            cleaned[labels == label_index] = 255
+    return cleaned
+
+
+def _fill_mask_holes(mask: np.ndarray) -> np.ndarray:
+    inverse = 255 - mask
+    num_labels, labels, _, _ = cv2.connectedComponentsWithStats(inverse, 8, cv2.CV_32S)
+    if num_labels <= 1:
+        return mask
+
+    border_labels = set(np.unique(labels[0, :]))
+    border_labels.update(np.unique(labels[-1, :]))
+    border_labels.update(np.unique(labels[:, 0]))
+    border_labels.update(np.unique(labels[:, -1]))
+
+    filled = mask.copy()
+    for label_index in range(1, num_labels):
+        if label_index not in border_labels:
+            filled[labels == label_index] = 255
+    return filled
+
+
+def refine_inpaint_mask_quality(
+    mask: np.ndarray,
+    balloon_mask: np.ndarray = None,
+    min_area: int = 2,
+    max_dilate: int = 4,
+) -> np.ndarray:
+    """Clean and slightly expand a text inpainting mask for higher quality fills."""
+    if mask is None:
+        return mask
+
+    refined = np.ascontiguousarray((mask > 0).astype(np.uint8) * 255)
+    if not np.any(refined):
+        return refined
+
+    refined = _remove_small_mask_components(refined, min_area=max(1, int(min_area)))
+    if not np.any(refined):
+        return refined
+
+    refined = _fill_mask_holes(refined)
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+
+    nonzero = cv2.findNonZero(refined)
+    if nonzero is not None and max_dilate > 0:
+        _, _, bbox_w, bbox_h = cv2.boundingRect(nonzero)
+        longer = max(bbox_w, bbox_h)
+        dilate_size = 1
+        if longer > 512:
+            dilate_size = 4
+        elif longer > 192:
+            dilate_size = 3
+        elif longer > 64:
+            dilate_size = 2
+        dilate_size = min(dilate_size, int(max_dilate))
+        if dilate_size > 0:
+            element = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (2 * dilate_size + 1, 2 * dilate_size + 1),
+                (dilate_size, dilate_size),
+            )
+            refined = cv2.dilate(refined, element, iterations=1)
+
+    if balloon_mask is not None:
+        balloon = np.ascontiguousarray((balloon_mask > 0).astype(np.uint8) * 255)
+        if balloon.shape == refined.shape:
+            refined = cv2.bitwise_and(refined, balloon)
+
+    return refined
+
+
 def extract_ballon_mask(img: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     '''
     Given original img and text mask (cropped)

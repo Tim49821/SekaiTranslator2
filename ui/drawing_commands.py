@@ -80,6 +80,36 @@ class InpaintUndoCommand(QUndoCommand):
         self.canvas.updateLayers()
 
 
+class InpaintHardResetCommand(QUndoCommand):
+    def __init__(self, canvas: Canvas):
+        super().__init__()
+        self.canvas = canvas
+        project = self.canvas.imgtrans_proj
+        self.undo_img = np.copy(project.inpainted_array)
+        self.undo_mask = np.copy(project.mask_array)
+        self.redo_img = np.copy(project.img_array)
+        self.redo_mask = np.zeros(project.img_array.shape[:2], dtype=project.mask_array.dtype)
+
+    def _apply(self, img: np.ndarray, mask: np.ndarray):
+        project = self.canvas.imgtrans_proj
+        if project.inpainted_array is not None and project.inpainted_array.shape == img.shape:
+            project.inpainted_array[:] = img
+        else:
+            project.inpainted_array = np.copy(img)
+
+        if project.mask_array is not None and project.mask_array.shape == mask.shape:
+            project.mask_array[:] = mask
+        else:
+            project.mask_array = np.copy(mask)
+        self.canvas.updateLayers()
+
+    def redo(self) -> None:
+        self._apply(self.redo_img, self.redo_mask)
+
+    def undo(self) -> None:
+        self._apply(self.undo_img, self.undo_mask)
+
+
 class EmptyCommand(QUndoCommand):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
