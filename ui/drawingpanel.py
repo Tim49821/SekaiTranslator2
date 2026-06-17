@@ -391,6 +391,15 @@ class DrawingPanel(Widget):
         self.eraserConfigPanel.thicknessChanged.connect(self.setEraserToolWidth)
         self.eraserConfigPanel.shapeChanged.connect(self.setEraserShape)
 
+        self._tool_display_names = {
+            'hand': self._toolDisplayName('Hand'),
+            'inpaint': self._toolDisplayName('Inpaint'),
+            'restore': self._toolDisplayName('Restore'),
+            'pen': self._toolDisplayName('Pen'),
+            'eraser': self._toolDisplayName('Eraser'),
+            'rect': self._toolDisplayName('Rectangle'),
+        }
+
         toolboxlayout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         toolboxlayout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         toolboxlayout.addWidget(self.handTool)
@@ -448,13 +457,33 @@ class DrawingPanel(Widget):
         if self.isVisible():
             self.setCurrentToolByName(tool_name)
 
+    def _toolDisplayName(self, text: str) -> str:
+        translated = self.tr(text)
+        if translated != text:
+            return translated
+        if pcfg.display_lang == 'ko_KR':
+            ko_map = {
+                'Hand': '손 도구',
+                'Inpaint': '인페인트',
+                'Restore': '복원',
+                'Pen': '펜',
+                'Eraser': '지우개',
+                'Rectangle': '사각형',
+            }
+            return ko_map.get(text, text)
+        return text
+
     def setShortcutTip(self, tool_name: str, shortcut: str):
         try:
-            tool = f'{tool_name}Tool'
-            tool: QStackedWidget = getattr(self, tool)
-            tool.setToolTip(f'{shortcut}')
-        except:
-            LOGGER.error(f'{tool} not found in drawing panel')
+            tool_attr = f'{tool_name}Tool'
+            tool: DrawToolCheckBox = getattr(self, tool_attr)
+            tool_display_name = self._tool_display_names.get(tool_name, tool_name)
+            if shortcut:
+                tool.setToolTip(f'{tool_display_name} ({shortcut})')
+            else:
+                tool.setToolTip(tool_display_name)
+        except AttributeError:
+            LOGGER.error(f'{tool_attr} not found in drawing panel')
 
     def initDLModule(self, module_manager: ModuleManager):
         self.module_manager = module_manager

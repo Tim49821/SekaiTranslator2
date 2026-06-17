@@ -22,7 +22,7 @@ from ui.canvas import Canvas
 from ui.drawing_commands import InpaintHardResetCommand, InpaintUndoCommand, StrokeItemUndoCommand
 from ui.drawingpanel import DrawingPanel
 from ui.image_edit import DrawingLayer, ImageEditMode, PenShape, StrokeImgItem
-from utils.config import DrawPanelConfig
+from utils.config import DrawPanelConfig, pcfg
 
 
 def ensure_app():
@@ -270,6 +270,38 @@ class PaintModeTest(unittest.TestCase):
         self.assertEqual(canvas.painting_pen.widthF(), 19)
         self.assertEqual(canvas.painting_shape, 1)
         self.assertIs(panel.inpaintHardResetBtn.parent(), panel.restoreConfigPanel)
+
+    def test_draw_tool_tooltips_include_name_and_shortcut(self):
+        canvas = Canvas()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+
+        tooltips = {
+            "hand": (panel.handTool, "H", "Hand (H)"),
+            "inpaint": (panel.inpaintTool, "J", "Inpaint (J)"),
+            "restore": (panel.restoreTool, "O", "Restore (O)"),
+            "pen": (panel.penTool, "B", "Pen (B)"),
+            "eraser": (panel.eraserTool, "E", "Eraser (E)"),
+            "rect": (panel.rectTool, "R", "Rectangle (R)"),
+        }
+
+        for tool_name, (tool, shortcut, expected_tip) in tooltips.items():
+            panel.setShortcutTip(tool_name, shortcut)
+            self.assertEqual(tool.toolTip(), expected_tip)
+
+    def test_draw_tool_tooltips_use_korean_fallback(self):
+        original_lang = pcfg.display_lang
+        try:
+            pcfg.display_lang = "ko_KR"
+            canvas = Canvas()
+            panel = DrawingPanel(canvas, FakeInpainterPanel())
+
+            panel.setShortcutTip("hand", "H")
+            panel.setShortcutTip("pen", "B")
+
+            self.assertEqual(panel.handTool.toolTip(), "손 도구 (H)")
+            self.assertEqual(panel.penTool.toolTip(), "펜 (B)")
+        finally:
+            pcfg.display_lang = original_lang
 
     def test_restore_tool_restores_inpainted_pixels_to_original(self):
         canvas = Canvas()
