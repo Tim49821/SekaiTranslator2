@@ -29,6 +29,24 @@ from utils.config import pcfg, RunStatus
 cfg_module = pcfg.module
 
 
+def _textblock_has_source_text(blk: TextBlock) -> bool:
+    try:
+        text = blk.get_text()
+    except Exception:
+        text = getattr(blk, 'text', None)
+    return text_is_empty(text) is not True
+
+
+def _should_ignore_empty_textblock_masks(blk_list: List[TextBlock]) -> bool:
+    if not blk_list:
+        return False
+
+    if cfg_module.enable_ocr or cfg_module.enable_translate:
+        return True
+
+    return any(_textblock_has_source_text(blk) for blk in blk_list)
+
+
 class ModuleThread(QThread):
 
     finish_set_module = Signal()
@@ -389,11 +407,15 @@ class ImgtransThread(QThread):
         if mode > 1:
             im_h, im_w = tgt_img.shape[:2]
             progress_prod = 100. / len(blk_list) if len(blk_list) > 0 else 0
+            source_text_checked = mode < 3
             for ii, blk in enumerate(blk_list):
                 xyxy = enlarge_window(blk.xyxy, im_w, im_h)
                 xyxy = np.array(xyxy)
                 x1, y1, x2, y2 = xyxy.astype(np.int64)
                 blk.region_inpaint_dict = None
+                if source_text_checked and not _textblock_has_source_text(blk):
+                    self.finish_blktrans_stage.emit('inpaint', int((ii+1) * progress_prod))
+                    continue
                 if y2 - y1 > 2 and x2 - x1 > 2:
                     im = np.copy(tgt_img[y1: y2, x1: x2])
                     maskseg_method = get_maskseg_method()
@@ -581,7 +603,12 @@ class ImgtransThread(QThread):
                     
                 if mask is not None:
                     try:
-                        inpainted = self.inpainter.inpaint(img, mask, blk_list)
+                        inpainted = self.inpainter.inpaint(
+                            img,
+                            mask,
+                            blk_list,
+                            ignore_empty_textblocks=_should_ignore_empty_textblock_masks(blk_list),
+                        )
                         self.imgtrans_proj.save_inpainted(imgname, inpainted)
                     except Exception as e:
                         create_error_dialog(e, self.tr('Inpainting Failed.'), 'InpaintFailed')

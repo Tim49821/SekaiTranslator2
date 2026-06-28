@@ -98,6 +98,35 @@ class InpainterBaseTest(unittest.TestCase):
 
         self.assertEqual(inpainter.calls, 1)
 
+    def test_empty_source_textblock_mask_is_excluded_when_requested(self):
+        inpainter = CountingInpainter()
+        img = np.zeros((32, 32, 3), dtype=np.uint8)
+        mask = np.zeros((32, 32), dtype=np.uint8)
+        mask[4:10, 4:10] = 255
+        mask[4:10, 18:24] = 255
+        blocks = [
+            TextBlock([3, 3, 12, 12], text=[""]),
+            TextBlock([17, 3, 26, 12], text=["source"]),
+        ]
+
+        result = inpainter.inpaint(img, mask, blocks, ignore_empty_textblocks=True)
+
+        np.testing.assert_array_equal(result[6, 6], [0, 0, 0])
+        np.testing.assert_array_equal(result[6, 20], [10, 20, 30])
+        self.assertEqual(inpainter.calls, 1)
+
+    def test_empty_source_textblock_mask_is_kept_by_default(self):
+        inpainter = CountingInpainter()
+        img = np.zeros((24, 24, 3), dtype=np.uint8)
+        mask = np.zeros((24, 24), dtype=np.uint8)
+        mask[6:12, 6:12] = 255
+        blocks = [TextBlock([5, 5, 14, 14], text=[""])]
+
+        result = inpainter.inpaint(img, mask, blocks)
+
+        np.testing.assert_array_equal(result[8, 8], [10, 20, 30])
+        self.assertEqual(inpainter.calls, 1)
+
     def test_refine_inpaint_mask_quality_cleans_fills_and_limits_to_balloon(self):
         mask = np.zeros((14, 14), dtype=np.uint8)
         mask[1, 1] = 255

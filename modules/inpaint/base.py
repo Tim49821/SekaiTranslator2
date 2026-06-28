@@ -6,7 +6,8 @@ import sys
 
 from utils.registry import Registry
 from utils.textblock_mask import extract_ballon_mask, refine_inpaint_mask_quality
-from utils.imgproc_utils import enlarge_window
+from utils.imgproc_utils import enlarge_window, get_block_mask
+from utils.io_utils import text_is_empty
 
 from ..base import BaseModule, DEFAULT_DEVICE, soft_empty_cache, DEVICE_SELECTOR, GPUINTENSIVE_SET, TORCH_DTYPE_MAP, BF16_SUPPORTED
 from ..textdetector import TextBlock
@@ -99,6 +100,55 @@ def _cluster_textblock_windows(textblock_list: List[TextBlock], im_w: int, im_h:
     clusters.sort(key=lambda item: (item[0][1], item[0][0]))
     return clusters
 
+
+def _textblock_source_text_is_empty(blk: TextBlock) -> bool:
+    try:
+        text = blk.get_text()
+    except Exception:
+        text = getattr(blk, 'text', None)
+    return text_is_empty(text) is True
+
+
+def _textblock_xywh(blk: TextBlock) -> List[int]:
+    try:
+        xywh = blk.bounding_rect()
+        if xywh is not None and xywh[2] > 0 and xywh[3] > 0:
+            return [int(v) for v in xywh]
+    except Exception:
+        pass
+
+    xyxy = getattr(blk, 'xyxy', None)
+    if xyxy is None:
+        return None
+    x1, y1, x2, y2 = [int(v) for v in xyxy]
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [x1, y1, x2 - x1, y2 - y1]
+
+
+def _remove_empty_textblock_masks(mask: np.ndarray, textblock_list: List[TextBlock]) -> np.ndarray:
+    if mask is None or not textblock_list:
+        return mask
+
+    filtered_mask = np.ascontiguousarray(mask.copy())
+    for blk in textblock_list:
+        if not _textblock_source_text_is_empty(blk):
+            continue
+
+        xywh = _textblock_xywh(blk)
+        if xywh is None:
+            continue
+
+        blk_mask, xyxy = get_block_mask(xywh, filtered_mask, getattr(blk, 'angle', 0) or 0)
+        if blk_mask is None or xyxy is None:
+            continue
+
+        x1, y1, x2, y2 = xyxy
+        mask_view = filtered_mask[y1: y2, x1: x2]
+        mask_view[blk_mask > 0] = 0
+
+    return filtered_mask
+
 class InpainterBase(BaseModule):
 
     inpaint_by_block = True
@@ -141,7 +191,14 @@ class InpainterBase(BaseModule):
             else:
                 raise e
 
-    def inpaint(self, img: np.ndarray, mask: np.ndarray, textblock_list: List[TextBlock] = None, check_need_inpaint: bool = False) -> np.ndarray:
+    def inpaint(
+        self,
+        img: np.ndarray,
+        mask: np.ndarray,
+        textblock_list: List[TextBlock] = None,
+        check_need_inpaint: bool = False,
+        ignore_empty_textblocks: bool = False,
+    ) -> np.ndarray:
         if mask is None:
             return img.copy()
 
@@ -150,6 +207,8 @@ class InpainterBase(BaseModule):
             return img.copy()
 
         work_mask = refine_inpaint_mask_quality(work_mask)
+        if ignore_empty_textblocks:
+            work_mask = _remove_empty_textblock_masks(work_mask, textblock_list)
         if not np.any(work_mask > 0):
             return img.copy()
 
