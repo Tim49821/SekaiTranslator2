@@ -131,6 +131,23 @@ class PaintModeTest(unittest.TestCase):
         np.testing.assert_array_equal(canvas.imgtrans_proj.mask_array[1:4, 1:4], np.full((3, 3), 10, dtype=np.uint8))
         self.assertEqual(canvas.update_count, 2)
 
+    def test_inpaint_undo_command_matches_redo_image_channels(self):
+        canvas = FakeCanvas()
+        canvas.imgtrans_proj.inpainted_array[1:4, 1:4] = 7
+        canvas.imgtrans_proj.mask_array[1:4, 1:4] = 10
+        redo_img = np.zeros((3, 3, 4), dtype=np.uint8)
+        redo_img[:, :] = [11, 12, 13, 200]
+        redo_mask = np.full((3, 3), 255, dtype=np.uint8)
+
+        command = InpaintUndoCommand(canvas, redo_img, redo_mask, [1, 1, 4, 4])
+        command.redo()
+
+        np.testing.assert_array_equal(
+            canvas.imgtrans_proj.inpainted_array[1:4, 1:4],
+            np.full((3, 3, 3), [11, 12, 13], dtype=np.uint8),
+        )
+        np.testing.assert_array_equal(canvas.imgtrans_proj.mask_array[1:4, 1:4], redo_mask)
+
     def test_inpaint_hard_reset_command_restores_whole_page_and_mask(self):
         canvas = FakeCanvas()
         canvas.imgtrans_proj.img_array = np.full((6, 6, 3), 4, dtype=np.uint8)
@@ -340,6 +357,37 @@ class PaintModeTest(unittest.TestCase):
         canvas.redo()
         np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[12, 12], [10, 20, 30])
         self.assertEqual(canvas.imgtrans_proj.mask_array[12, 12], 0)
+
+    def test_restore_tool_handles_rgba_original_with_rgb_inpainted_image(self):
+        canvas = Canvas()
+        canvas.editor_index = 0
+        canvas.imgtrans_proj = FakeTextProject()
+        canvas.imgtrans_proj.img_array = np.zeros((200, 300, 4), dtype=np.uint8)
+        canvas.imgtrans_proj.img_array[:, :] = [10, 20, 30, 180]
+        canvas.imgtrans_proj.inpainted_array = canvas.imgtrans_proj.img_array[..., :3].copy()
+        canvas.imgtrans_proj.inpainted_array[8:16, 8:16] = [90, 91, 92]
+        canvas.imgtrans_proj.mask_array[8:16, 8:16] = 255
+        canvas.updateCanvas()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        panel.set_config(DrawPanelConfig(
+            restoretool_width=5,
+            restoretool_shape=PenShape.Rectangle,
+            current_tool=ImageEditMode.RestoreTool,
+        ))
+        stroke = StrokeImgItem(
+            canvas.painting_pen,
+            QPointF(12, 12),
+            canvas.img_window_size(),
+            shape=PenShape.Rectangle,
+        )
+        stroke.setParentItem(canvas.baseLayer)
+
+        panel.on_finish_painting(stroke)
+
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[12, 12], [10, 20, 30])
+        self.assertEqual(canvas.imgtrans_proj.mask_array[12, 12], 0)
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array[8, 8], [90, 91, 92])
+        self.assertEqual(canvas.imgtrans_proj.mask_array[8, 8], 255)
 
     def test_hard_reset_inpaint_is_undoable_from_panel(self):
         canvas = Canvas()

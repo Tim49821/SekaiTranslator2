@@ -3,6 +3,57 @@ import cv2
 import random
 from typing import List, Tuple, Union
 
+
+def match_image_channels(src: np.ndarray, target: np.ndarray) -> np.ndarray:
+    if src is None or target is None:
+        return src
+
+    matched = src
+    if target.ndim == 2:
+        if matched.ndim == 3:
+            matched = matched[..., 0]
+    elif target.ndim == 3:
+        target_channels = target.shape[-1]
+        if matched.ndim == 2:
+            matched = np.repeat(matched[..., np.newaxis], min(target_channels, 3), axis=2)
+
+        if matched.ndim == 3:
+            src_channels = matched.shape[-1]
+            if src_channels != target_channels:
+                if target_channels == 3:
+                    if src_channels >= 3:
+                        matched = matched[..., :3]
+                    else:
+                        matched = np.repeat(matched[..., :1], 3, axis=2)
+                elif target_channels == 4:
+                    if src_channels >= 4:
+                        matched = matched[..., :4]
+                    else:
+                        alpha = np.full(matched.shape[:2] + (1,), 255, dtype=matched.dtype)
+                        if src_channels >= 3:
+                            rgb = matched[..., :3]
+                        else:
+                            rgb = np.repeat(matched[..., :1], 3, axis=2)
+                        matched = np.concatenate([rgb, alpha], axis=2)
+
+    if matched.dtype != target.dtype:
+        matched = matched.astype(target.dtype)
+    return np.ascontiguousarray(matched)
+
+
+def restore_masked_pixels(target_region: np.ndarray, source_region: np.ndarray, mask: np.ndarray) -> bool:
+    if target_region is None or source_region is None or mask is None:
+        return False
+
+    restore_area = mask > 0
+    if not np.any(restore_area):
+        return False
+
+    source_region = match_image_channels(source_region, target_region)
+    target_region[restore_area] = source_region[restore_area]
+    return True
+
+
 def hex2bgr(hex):
     gmask = 254 << 8
     rmask = 254
@@ -410,4 +461,3 @@ def get_block_mask(xywh: List, mask_array: np.ndarray, angle: int):
             msk = mask_array[y1: y2, x1: x2]
 
     return msk, [x1, y1, x2, y2]
-        

@@ -8,6 +8,7 @@ except:
 from typing import Union, Tuple, List
 import numpy as np
 from utils.logger import logger
+from utils.imgproc_utils import match_image_channels
 
 from .image_edit import ImageEditMode, PixmapItem, DrawingLayer, StrokeImgItem
 from .canvas import Canvas, TextBlkItem
@@ -52,11 +53,12 @@ class InpaintUndoCommand(QUndoCommand):
         mask_view = mask_array[inpaint_rect[1]: inpaint_rect[3], inpaint_rect[0]: inpaint_rect[2]]
         self.undo_img = np.copy(img_view)
         self.undo_mask = np.copy(mask_view)
-        self.redo_img = inpainted
+        self.redo_img = np.copy(match_image_channels(inpainted, img_view))
         if merge_existing_mask:
             self.redo_mask = np.bitwise_or(mask, mask_view)
         else:
             self.redo_mask = mask
+        self.redo_mask = np.copy(self.redo_mask.astype(mask_view.dtype, copy=False))
         self.inpaint_rect = inpaint_rect
 
     def redo(self) -> None:

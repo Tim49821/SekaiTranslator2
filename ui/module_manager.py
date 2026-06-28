@@ -9,7 +9,7 @@ from qtpy.QtWidgets import QFileDialog
 from .funcmaps import get_maskseg_method
 from utils.logger import logger as LOGGER
 from utils.registry import Registry
-from utils.imgproc_utils import enlarge_window, get_block_mask
+from utils.imgproc_utils import enlarge_window, get_block_mask, restore_masked_pixels
 from utils.io_utils import imread, text_is_empty
 from modules.translators import MissingTranslatorParams
 from modules.base import BaseModule, soft_empty_cache
@@ -540,10 +540,14 @@ class ImgtransThread(QThread):
                                 blk_mask, xyxy = get_block_mask(xywh, mask, blk.angle)
                                 x1, y1, x2, y2 = xyxy
                                 if blk_mask is not None:
-                                    mask[y1: y2, x1: x2] = 0
+                                    mask_view = mask[y1: y2, x1: x2]
+                                    mask_view[blk_mask > 0] = 0
                                     if inpainted is not None:
-                                        mskpnt = np.where(blk_mask)
-                                        inpainted[y1: y2, x1: x2][mskpnt] = img[y1: y2, x1: x2][mskpnt]
+                                        restore_masked_pixels(
+                                            inpainted[y1: y2, x1: x2],
+                                            img[y1: y2, x1: x2],
+                                            blk_mask,
+                                        )
                                     need_save_mask = True
                             if inpainted is not None and need_save_mask:
                                 self.imgtrans_proj.save_inpainted(imgname, inpainted)

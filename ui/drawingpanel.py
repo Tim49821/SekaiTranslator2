@@ -6,7 +6,7 @@ from typing import Union, Tuple, List
 import numpy as np
 import cv2
 
-from utils.imgproc_utils import enlarge_window
+from utils.imgproc_utils import enlarge_window, restore_masked_pixels
 from utils.textblock_mask import canny_flood, connected_canny_flood
 from utils.logger import logger
 from utils.config import pcfg
@@ -927,7 +927,7 @@ class DrawingPanel(Widget):
             return
 
         restored_img = np.copy(project.inpainted_array[y1:y2, x1:x2])
-        restored_img[restore_area] = project.img_array[y1:y2, x1:x2][restore_area]
+        restore_masked_pixels(restored_img, project.img_array[y1:y2, x1:x2], restore_area)
 
         restored_mask = np.copy(current_mask)
         restored_mask[restore_area] = 0

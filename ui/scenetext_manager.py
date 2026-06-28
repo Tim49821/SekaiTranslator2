@@ -19,7 +19,7 @@ from .textedit_commands import propagate_user_edit, TextEditCommand, ReshapeItem
 from .text_panel import FontFormatPanel
 from utils.config import pcfg
 from utils import shared
-from utils.imgproc_utils import extract_ballon_region, rotate_polygons, get_block_mask
+from utils.imgproc_utils import extract_ballon_region, rotate_polygons, get_block_mask, match_image_channels
 from utils.text_processing import seg_text, is_cjk
 from utils.text_layout import layout_text
 
@@ -96,9 +96,11 @@ class DeleteBlkItemsCommand(QUndoCommand):
                     self.mask_pnts.append(None)
                 else:
                     x1, y1, x2, y2 = xyxy
+                    img_view = img_array[y1: y2, x1: x2]
+                    original_view = original_array[y1: y2, x1: x2]
                     self.mask_pnts.append(np.where(msk))
-                    self.undo_img_list.append(np.copy(img_array[y1: y2, x1: x2]))
-                    self.redo_img_list.append(np.copy(original_array[y1: y2, x1: x2]))
+                    self.undo_img_list.append(np.copy(img_view))
+                    self.redo_img_list.append(np.copy(match_image_channels(original_view, img_view)))
                     self.inpaint_rect_lst.append([x1, y1, x2, y2])
 
             rst_idx = self.sw.get_result_edit_index(pw.e_trans)
