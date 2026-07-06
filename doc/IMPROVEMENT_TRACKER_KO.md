@@ -1,14 +1,14 @@
 # Improvement Tracker
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 이 문서는 현재 코드베이스에서 개선이 필요해 보이는 항목을 우선순위와 근거 중심으로 추적합니다. 상태 값은 `Open`, `In progress`, `Done`, `Deferred` 중 하나로 갱신합니다.
 
 ## Snapshot
 
 - 현재 브랜치: `main`
-- 검토 시작 시 `git status --short` 출력은 비어 있었음. 이번 변경은 이 문서 갱신임.
-- `python -m unittest discover -s tests -p 'test_*.py'`: 78 tests, OK
+- 이번 패스에서 `IMP-001`, `IMP-002`를 처리함.
+- `python -m unittest discover -s tests -p 'test_*.py'`: 80 tests, OK
 - `python -m pytest -q`: 현재 기본 Python 환경에 `pytest`가 없어 실행 불가
 - 테스트 범위는 단위 테스트 중심이며, FastAPI endpoint, 실제 GUI smoke, 실제 샘플 이미지 기반 OCR/merge 품질 검증은 아직 약함.
 
@@ -22,8 +22,8 @@ Last updated: 2026-07-05
 
 | ID | Priority | Status | Area | Issue | Evidence | Next action |
 | --- | --- | --- | --- | --- | --- | --- |
-| IMP-001 | P1 | Open | Config | 배포용 템플릿인 `config/config.json`에 로컬 실행 상태가 섞여 있음 | `utils/shared.py:16`에서 `config/config.json`을 템플릿으로 사용함. `config/config.json:1`에는 `mps`, 한국어 타깃, `recent_proj_list`, `text_styles_path` 절대 경로, 개인 폰트 설정이 포함됨 | 템플릿을 플랫폼 중립 기본값으로 정리하고, 로컬 상태는 ignored `config/config.local.json`에만 저장되도록 회귀 테스트 추가 |
-| IMP-002 | P1 | Open | Repo hygiene | 런타임 산출물과 캐시가 Git에 추적되고 있음 | `git ls-files` 기준 `.btrans_cache/cache.json` 및 `relay_storage/*` 10개 이미지가 추적됨. `du -sh relay_storage`는 약 27MB | `.gitignore`는 유지하고 `git rm --cached .btrans_cache/cache.json relay_storage/...`로 index에서만 제거 |
+| IMP-001 | P1 | Done | Config | 배포용 템플릿인 `config/config.json`에 로컬 실행 상태가 섞여 있음 | `config/config.json`을 기본값 기반 템플릿으로 재작성함. 모듈별 device/개인 번역기 설정/최근 프로젝트 경로를 제거하고 `text_styles_path`는 `config/textstyles/default.json` 상대 경로로 변경. `tests/test_config_template.py` 추가 | 완료. 향후 템플릿에 로컬 상태가 다시 들어가면 테스트가 실패해야 함 |
+| IMP-002 | P1 | Done | Repo hygiene | 런타임 산출물과 캐시가 Git에 추적되고 있음 | `.btrans_cache/cache.json` 및 `relay_storage/*` 10개 이미지를 `git rm --cached`로 index에서 제거함. 실제 파일은 working tree에 보존됨 | 완료. 커밋 시 삭제로 staged 되는 것이 정상이며, 이후에는 `.gitignore`가 재추적을 막아야 함 |
 | IMP-003 | P1 | Open | Ops docs | iOS 단축어 문서에 실제 공개 도메인과 tunnel 이름이 남아 있음 | `doc/IOS_SHORTCUT_KO.md:11`의 `sekai-relay`, `doc/IOS_SHORTCUT_KO.md:19`, `:25`, `:26`, `:139`, `:152`, `:188`의 실제 URL | `$BT_RELAY_PUBLIC_URL`, `<tunnel-name>` placeholder로 바꾸고 개인 운영 runbook은 ignored local 문서로 분리 |
 | IMP-004 | P1 | Open | API hardening | 공개 바인딩 시 인증 토큰이 비어 있어도 서버가 그대로 뜰 수 있음 | `launch.py:45-47`, `relay_server.py:456-460`에서 host와 token을 독립 옵션으로 받고 token 기본값은 빈 문자열. `make_auth_dependency`는 token이 없으면 인증을 생략함 | host가 loopback이 아니고 token이 비어 있으면 경고 또는 실행 거부 옵션 추가. 문서에도 공개 배포 최소 조건 명시 |
 | IMP-005 | P1 | Open | API reliability | relay/headless job 상태가 메모리에만 있어 재시작 시 큐/결과 메타데이터가 사라지고, worker 사망 시 `running` job이 stuck 될 수 있음 | `relay_server.py:82-89`, `headless_server.py:223-229`에서 `_jobs = {}`와 in-memory queue만 사용. `relay_server.py:166-174`는 claim 후 lease/timeout reclaim 없음 | SQLite 또는 job별 JSON 메타데이터를 저장하고 `running` lease timeout, retry/reclaim 정책 추가 |
@@ -46,8 +46,7 @@ Last updated: 2026-07-05
 
 ## Suggested Order
 
-1. `IMP-002`로 추적 중인 런타임 산출물과 캐시를 index에서 제거합니다.
-2. `IMP-001`과 `IMP-003`으로 배포/문서에 섞인 로컬 상태를 정리합니다.
-3. `IMP-004`와 `IMP-005`로 공개 API 운영 안전성을 보강합니다.
-4. `IMP-006`-`IMP-008`로 테스트와 검증 루프를 먼저 안정화합니다.
-5. `IMP-009`-`IMP-013`은 기능 작업과 병행 가능한 구조/품질 개선으로 진행합니다.
+1. `IMP-003`으로 iOS 단축어 문서의 실제 공개 도메인과 tunnel 이름을 placeholder로 바꿉니다.
+2. `IMP-004`와 `IMP-005`로 공개 API 운영 안전성을 보강합니다.
+3. `IMP-006`-`IMP-008`로 테스트와 검증 루프를 먼저 안정화합니다.
+4. `IMP-009`-`IMP-013`은 기능 작업과 병행 가능한 구조/품질 개선으로 진행합니다.
