@@ -743,6 +743,7 @@ class MainWindow(mainwindow_cls):
         self.titleBar.replaceMTkeyword_trigger.connect(self.show_MT_keyword_window)
         self.titleBar.replaceOCRkeyword_trigger.connect(self.show_OCR_keyword_window)
         self.titleBar.run_trigger.connect(self.leftBar.runImgtransBtn.click)
+        self.titleBar.run_current_page_trigger.connect(self.run_current_page_imgtrans)
         self.titleBar.run_woupdate_textstyle_trigger.connect(self.run_imgtrans_wo_textstyle_update)
         self.titleBar.translate_page_trigger.connect(self.on_transpagebtn_pressed)
         self.titleBar.enable_module.connect(self.on_enable_module)
@@ -1661,11 +1662,17 @@ class MainWindow(mainwindow_cls):
             # 如果是 restart_btn，继续执行下面的代码（重新运行）
         self.on_run_imgtrans()
 
+    def run_current_page_imgtrans(self, checked=False):
+        page_name = self.imgtrans_proj.current_img
+        if page_name is None or page_name not in self.imgtrans_proj.pages:
+            return
+        self.on_run_imgtrans(pages_to_process=[page_name])
+
     def run_imgtrans_wo_textstyle_update(self):
         self._run_imgtrans_wo_textstyle_update = True
         self.run_imgtrans()
 
-    def on_run_imgtrans(self, continue_mode=False):
+    def on_run_imgtrans(self, continue_mode=False, pages_to_process=None):
         self.backup_blkstyles.clear()
 
         if self.bottomBar.textblockChecker.isChecked():
@@ -1673,36 +1680,50 @@ class MainWindow(mainwindow_cls):
         self.postprocess_mt_toggle = False
 
         all_disabled = pcfg.module.all_stages_disabled()
-        
+
+        requested_pages = None
+        if pages_to_process is not None:
+            requested_pages = [
+                page_name for page_name in pages_to_process
+                if page_name in self.imgtrans_proj.pages
+            ]
+            if len(requested_pages) == 0:
+                return
+
         pages_to_process = []
-        
+
         # 继续模式：先检查哪些页面需要处理
         if continue_mode:
-            for page_name in self.imgtrans_proj.pages:
+            page_names = requested_pages if requested_pages is not None else self.imgtrans_proj.pages
+            for page_name in page_names:
                 if not self.imgtrans_proj.get_page_progress(page_name):
                     pages_to_process.append(page_name)
             if len(pages_to_process) == 0:
                 return
+        elif requested_pages is not None:
+            pages_to_process = requested_pages
+            for page_name in pages_to_process:
+                self.imgtrans_proj.set_page_progress(page_name, 0)
         else:
             for page_name in self.imgtrans_proj.pages:
                 self.imgtrans_proj.set_page_progress(page_name, 0)
-        
+
         if pcfg.module.enable_detect:
-            for page in self.imgtrans_proj.pages:
-                if not pcfg.module.keep_exist_textlines:
-                    if not pages_to_process:
-                        # 没有指定pages_to_process，清空所有页面
-                        self.imgtrans_proj.pages[page].clear()
+            if not pcfg.module.keep_exist_textlines and not continue_mode:
+                pages_to_clear = pages_to_process if pages_to_process else self.imgtrans_proj.pages
+                for page in pages_to_clear:
+                    self.imgtrans_proj.pages[page].clear()
         else:
             self.st_manager.updateTextBlkList()
             textblk: TextBlock = None
-            for page_name, blklist in self.imgtrans_proj.pages.items():
+            page_set = set(pages_to_process) if pages_to_process else None
+            self.backup_blkstyles = [[] for _ in self.imgtrans_proj.pages]
+            for page_index, (page_name, blklist) in enumerate(self.imgtrans_proj.pages.items()):
                 # 如果指定了pages_to_process，跳过不需要处理的页面
-                if pages_to_process and page_name not in pages_to_process:
+                if page_set is not None and page_name not in page_set:
                     continue
-                    
-                ffmt_list = []
-                self.backup_blkstyles.append(ffmt_list)
+
+                ffmt_list = self.backup_blkstyles[page_index]
                 for textblk in blklist:
                     if not pcfg.module.enable_detect:
                         ffmt_list.append(textblk.fontformat.deepcopy())

@@ -432,15 +432,17 @@ class TitleBar(Widget):
             sa.toggled.connect(self.stageEnableStateChanged)
 
         runAction = QAction(self.tr('Run'), self)
+        runCurrentPageAction = QAction(self._tr_ko('Run current page only'), self)
         runWoUpdateTextStyle = QAction(self.tr('Run without update textstyle'), self)
         translatePageAction = QAction(self.tr('Translate page'), self)
         runMenu = PersistentCheckMenu(self.runToolBtn)
         runMenu.addActions(stageActions)
         runMenu.addSeparator()
-        runMenu.addActions([runAction, runWoUpdateTextStyle, translatePageAction])
+        runMenu.addActions([runAction, runCurrentPageAction, runWoUpdateTextStyle, translatePageAction])
         self.runToolBtn.setMenu(runMenu)
         self.runToolBtn.setPopupMode(QToolButton.InstantPopup)
         self.run_trigger = runAction.triggered
+        self.run_current_page_trigger = runCurrentPageAction.triggered
         self.run_woupdate_textstyle_trigger = runWoUpdateTextStyle.triggered
         self.translate_page_trigger = translatePageAction.triggered
 
@@ -494,6 +496,7 @@ class TitleBar(Widget):
             ko_map = {
                 'Tools': '도구',
                 'Merge Area Tool': '지역 합병 도구',
+                'Run current page only': '이 페이지만 실행',
             }
             return ko_map.get(text, text)
         return text

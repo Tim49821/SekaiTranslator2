@@ -874,8 +874,11 @@ class ModuleManager(QObject):
             return
         
         if cfg_module.all_stages_disabled() and self.imgtrans_proj is not None and self.imgtrans_proj.num_pages > 0:
-            for ii in range(self.imgtrans_proj.num_pages):
-                self.page_trans_finished.emit(ii)
+            page_names = pages_to_process if pages_to_process else list(self.imgtrans_proj.pages)
+            for page_name in page_names:
+                page_index = self.imgtrans_proj.pagename2idx(page_name)
+                if page_index >= 0:
+                    self.page_trans_finished.emit(page_index)
             self.imgtrans_pipeline_finished.emit()
             return
 
