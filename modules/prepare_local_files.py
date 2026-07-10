@@ -7,7 +7,75 @@ import traceback
 from . import INPAINTERS, TEXTDETECTORS, OCR, TRANSLATORS
 from .base import BaseModule, LOGGER
 import utils.shared as shared
-from utils.download_util import download_and_check_files
+from utils.download_util import DownloadCancelled, download_and_check_files
+from utils.py_package_manager import MissingRequirement, PyPackageManager
+from utils.registry import ModuleSpec
+from .package_import_names import PACKAGE_IMPORT_NAMES
+
+
+class MissingDependency(ModuleNotFoundError):
+    def __init__(self, spec: ModuleSpec, missing: List[MissingRequirement]):
+        self.spec = spec
+        self.missing = missing
+        self.requirements = [item.requirement for item in missing]
+        deps = ', '.join(self.requirements)
+        super().__init__(
+            f'Module "{spec.key}" requires Python package(s): {deps}. '
+            'Install them or select a module that does not require them.'
+        )
+
+
+def _spec_from_module(module_spec_or_class) -> ModuleSpec:
+    if isinstance(module_spec_or_class, ModuleSpec):
+        return module_spec_or_class
+    module_class = module_spec_or_class
+    spec = getattr(module_class, '_module_spec', None)
+    if isinstance(spec, ModuleSpec):
+        return spec
+    return ModuleSpec(
+        key=getattr(module_class, 'name', getattr(module_class, '__name__', '')),
+        import_path=getattr(module_class, '__module__', ''),
+        class_name=getattr(module_class, '__name__', ''),
+        params=getattr(module_class, 'params', None),
+        download_file_list=getattr(module_class, 'download_file_list', None),
+        download_file_on_load=getattr(module_class, 'download_file_on_load', False),
+        dependencies=getattr(module_class, 'dependencies', []),
+        resolved_class=module_class,
+    )
+
+
+def _missing_module_requirements(module_spec_or_class) -> List[MissingRequirement]:
+    spec = _spec_from_module(module_spec_or_class)
+    dependencies = list(dict.fromkeys(spec.dependencies or []))
+    package_manager = PyPackageManager(package_import_names=PACKAGE_IMPORT_NAMES)
+    return package_manager.missing_requirements(dependencies)
+
+
+def ensure_module_files(module_spec_or_class, progress_callback=None, cancel_event=None):
+    spec = _spec_from_module(module_spec_or_class)
+    missing = _missing_module_requirements(spec)
+    if missing:
+        raise MissingDependency(spec, missing)
+    if spec.download_file_list is None:
+        return True
+
+    for download_kwargs in spec.download_file_list:
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled('Module preparation cancelled by user.')
+        if progress_callback is not None:
+            progress_callback({'event': 'module_file_group', 'module': spec.key})
+        all_successful = download_and_check_files(
+            **download_kwargs,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
+        if not all_successful:
+            LOGGER.error(f'Please save these files manually to sepcified path and retry, otherwise {spec.key} will be unavailable.')
+            return False
+
+    if shared.CACHE_UPDATED:
+        shared.dump_cache()
+    return True
 
 
 def _required_file_exists(save_dir: str, required_file: Union[str, List[str]]) -> bool:
@@ -140,8 +208,10 @@ def prepare_pkuseg():
 
 def prepare_local_files_forall():
 
-    # download files required by detect, ocr, inpaint and translators
-    download_and_check_module_files()
+    # Module files are prepared lazily when a module is selected or a pipeline
+    # needs it. Keep the eager path behind an environment flag for maintenance.
+    if os.environ.get('BALLONTRANS_PREPARE_ALL_MODULE_FILES', '').strip().lower() in {'1', 'true', 'yes'}:
+        download_and_check_module_files()
 
     prepare_pkuseg()
 

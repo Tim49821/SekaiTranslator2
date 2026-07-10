@@ -55,8 +55,8 @@ def restore_masked_pixels(target_region: np.ndarray, source_region: np.ndarray, 
 
 
 def hex2bgr(hex):
-    gmask = 254 << 8
-    rmask = 254
+    gmask = 255 << 8
+    rmask = 255
     b = hex >> 16
     g = (hex & gmask) >> 8
     r = hex & rmask

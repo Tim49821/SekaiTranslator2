@@ -405,28 +405,28 @@ def prepare_environment():
                 run_pip(["install", req], req)
                 req_updated = True
 
-    if is_amd_gpu():
-        print('AMD GPU: Yes')
-        if args.nightly:
-            amd_nightly_gpu = supported_amd_nightly_gpu()
-            if amd_nightly_gpu == "None":
-                raise RuntimeError("No AMD Nightly GPU supported")
-            if amd_nightly_gpu == "RDNA3":
-                torch_command = os.environ.get(
-                    'TORCH_COMMAND',
-                    "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl",
-                )
-            if amd_nightly_gpu == "RDNA4":
-                torch_command = os.environ.get(
-                    'TORCH_COMMAND',
-                    "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl",
-                )
+    if args.reinstall_torch:
+        if is_amd_gpu():
+            print('AMD GPU: Yes')
+            if args.nightly:
+                amd_nightly_gpu = supported_amd_nightly_gpu()
+                if amd_nightly_gpu == "None":
+                    raise RuntimeError("No AMD Nightly GPU supported")
+                if amd_nightly_gpu == "RDNA3":
+                    torch_command = os.environ.get(
+                        'TORCH_COMMAND',
+                        "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl",
+                    )
+                if amd_nightly_gpu == "RDNA4":
+                    torch_command = os.environ.get(
+                        'TORCH_COMMAND',
+                        "pip install https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torch-2.8.0a0%2Bgitfc14c65-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchvision-0.24.0a0%2Bc85f008-cp312-cp312-win_amd64.whl https://repo.radeon.com/rocm/windows/rocm-rel-6.4.4/torchaudio-2.6.0a0%2B1a8f621-cp312-cp312-win_amd64.whl",
+                    )
+            else:
+                # AMD GPU: Cuda 11.8, Pytorch 2.2.2
+                torch_command = os.environ.get('TORCH_COMMAND', "pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cu118 --disable-pip-version-check")
         else:
-            # AMD GPU: Cuda 11.8, Pytorch 2.2.2
-            torch_command = os.environ.get('TORCH_COMMAND', "pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cu118 --disable-pip-version-check")
-    else:
-        torch_command = os.environ.get('TORCH_COMMAND', default_torch_command())
-    if args.reinstall_torch or not is_installed("torch") or not is_installed("torchvision"):
+            torch_command = os.environ.get('TORCH_COMMAND', default_torch_command())
         torch_command_parts = command_parts(torch_command)
         if torch_command_parts[:2] == ['pip', 'install']:
             torch_command_parts = [python, '-m', *torch_command_parts]

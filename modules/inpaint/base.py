@@ -6,14 +6,48 @@ import sys
 
 from utils.registry import Registry
 from utils.textblock_mask import extract_ballon_mask, refine_inpaint_mask_quality
-from utils.imgproc_utils import enlarge_window, get_block_mask
+from utils.imgproc_utils import enlarge_window, get_block_mask, rotate_polygons, xywh2xyxypoly
 from utils.io_utils import text_is_empty
+from utils.config import pcfg
 
-from ..base import BaseModule, DEFAULT_DEVICE, soft_empty_cache, DEVICE_SELECTOR, GPUINTENSIVE_SET, TORCH_DTYPE_MAP, BF16_SUPPORTED
+from ..base import BaseModule, DEFAULT_DEVICE, soft_empty_cache, DEVICE_SELECTOR, GPUINTENSIVE_SET, TORCH_DTYPE_MAP, BF16_SUPPORTED, require_torch
 from ..textdetector import TextBlock
 
 INPAINTERS = Registry('inpainters')
 register_inpainter = INPAINTERS.register_module
+
+
+def _torch_oom_error():
+    try:
+        torch = require_torch()
+        return torch.cuda.OutOfMemoryError
+    except Exception:
+        return None
+
+
+def filter_mask_by_bboxes(mask: np.ndarray, textblock_list: List[TextBlock] = None) -> np.ndarray:
+    """Keep inpaint mask pixels inside detected text block bounding boxes."""
+    if mask is None or not textblock_list:
+        return mask
+
+    rect_mask = np.zeros_like(mask)
+    for blk in textblock_list:
+        xywh = _textblock_xywh(blk)
+        if xywh is None:
+            continue
+
+        x1, y1, bbox_w, bbox_h = xywh
+        rect = xywh2xyxypoly(np.array([[x1, y1, bbox_w, bbox_h]]))
+        angle = getattr(blk, 'angle', 0) or 0
+        if angle != 0:
+            rect = rotate_polygons([x1 + bbox_w / 2, y1 + bbox_h / 2], rect, -angle)
+        rect = rect.reshape(-1, 4, 2).astype(np.int32)
+        cv2.fillPoly(rect_mask, [rect], 255)
+        cv2.polylines(rect_mask, [rect], True, 255, 1)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    rect_mask = cv2.dilate(rect_mask, kernel)
+    return cv2.bitwise_and(mask, rect_mask)
 
 
 def inpaint_handle_alpha_channel(original_alpha, mask):
@@ -172,12 +206,13 @@ class InpainterBase(BaseModule):
         try:
             return self._inpaint(img, mask, textblock_list)
         except Exception as e:
-            if DEFAULT_DEVICE == 'cuda' and isinstance(e, torch.cuda.OutOfMemoryError):
+            oom_error = _torch_oom_error()
+            if DEFAULT_DEVICE == 'cuda' and oom_error is not None and isinstance(e, oom_error):
                 soft_empty_cache()
                 try:
                     return self._inpaint(img, mask, textblock_list)
                 except Exception as ee:
-                    if isinstance(ee, torch.cuda.OutOfMemoryError):
+                    if isinstance(ee, oom_error):
                         self.logger.warning(f'CUDA out of memory while calling {self.name}, fall back to cpu...\n\
                                             if running into it frequently, consider lowering the inpaint_size')
                         self.moveToDevice('cpu')
@@ -207,6 +242,8 @@ class InpainterBase(BaseModule):
             return img.copy()
 
         work_mask = refine_inpaint_mask_quality(work_mask)
+        if pcfg.module.filter_mask_by_bboxes:
+            work_mask = filter_mask_by_bboxes(work_mask, textblock_list)
         if ignore_empty_textblocks:
             work_mask = _remove_empty_textblock_masks(work_mask, textblock_list)
         if not np.any(work_mask > 0):
@@ -359,14 +396,12 @@ class PatchmatchInpainter(InpainterBase):
     def is_cpu_intensive(self) -> bool:
         return True
 
-
-import torch
 from utils.imgproc_utils import resize_keepasp
-from .aot import AOTGenerator, load_aot_model
 
 
 @register_inpainter('aot')
 class AOTInpainter(InpainterBase):
+    dependencies = ['torch', 'torchvision', 'einops']
 
     params = {
         'inpaint_size': {
@@ -383,7 +418,7 @@ class AOTInpainter(InpainterBase):
 
     device = DEFAULT_DEVICE
     inpaint_size = 2048
-    model: AOTGenerator = None
+    model = None
     _load_model_keys = {'model'}
 
     download_file_list = [{
@@ -396,9 +431,11 @@ class AOTInpainter(InpainterBase):
         super().__init__(**params)
         self.device = self.params['device']['value']
         self.inpaint_size = int(self.params['inpaint_size']['value'])
-        self.model: AOTGenerator = None
+        self.model = None
         
     def _load_model(self):
+        from .aot import load_aot_model
+
         AOTMODEL_PATH = 'data/models/aot_inpainter.ckpt'
         self.model = load_aot_model(AOTMODEL_PATH, self.device)
 
@@ -407,6 +444,7 @@ class AOTInpainter(InpainterBase):
         self.device = device
 
     def inpaint_preprocess(self, img: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        torch = require_torch()
 
         img_original = np.copy(img)
         mask_original = np.copy(mask)
@@ -436,12 +474,13 @@ class AOTInpainter(InpainterBase):
         img_torch *= (1 - mask_torch)
         return img_torch, mask_torch, img_original, mask_original, pad_bottom, pad_right
 
-    @torch.no_grad()
     def _inpaint(self, img: np.ndarray, mask: np.ndarray, textblock_list: List[TextBlock] = None) -> np.ndarray:
+        torch = require_torch()
 
         im_h, im_w = img.shape[:2]
         img_torch, mask_torch, img_original, mask_original, pad_bottom, pad_right = self.inpaint_preprocess(img, mask)
-        img_inpainted_torch = self.model(img_torch, mask_torch)
+        with torch.no_grad():
+            img_inpainted_torch = self.model(img_torch, mask_torch)
         img_inpainted = ((img_inpainted_torch.cpu().squeeze_(0).permute(1, 2, 0).numpy() + 1.0) * 127.5)
         img_inpainted = (np.clip(np.round(img_inpainted), 0, 255)).astype(np.uint8)
         if pad_bottom > 0:
@@ -467,11 +506,9 @@ class AOTInpainter(InpainterBase):
         elif param_key == 'inpaint_size':
             self.inpaint_size = int(self.params['inpaint_size']['value'])
 
-
-from .lama import LamaFourier, load_lama_mpe
-
 @register_inpainter('lama_mpe')
 class LamaInpainterMPE(InpainterBase):
+    dependencies = ['torch', 'torchvision', 'einops']
 
     params = {
         'inpaint_size': {
@@ -497,12 +534,15 @@ class LamaInpainterMPE(InpainterBase):
         self.device = self.params['device']['value']
         self.inpaint_size = int(self.params['inpaint_size']['value'])
         self.precision = 'fp32'
-        self.model: LamaFourier = None
+        self.model = None
 
     def _load_model(self):
+        from .lama import load_lama_mpe
+
         self.model = load_lama_mpe(r'data/models/lama_mpe.ckpt', self.device)
 
     def inpaint_preprocess(self, img: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        torch = require_torch()
 
         img_original = np.copy(img)
         mask_original = np.copy(mask)
@@ -538,23 +578,24 @@ class LamaInpainterMPE(InpainterBase):
         img_torch *= (1 - mask_torch)
         return img_torch, mask_torch, rel_pos, direct, img_original, mask_original, pad_bottom, pad_right
 
-    @torch.no_grad()
     def _inpaint(self, img: np.ndarray, mask: np.ndarray, textblock_list: List[TextBlock] = None) -> np.ndarray:
+        torch = require_torch()
 
         im_h, im_w = img.shape[:2]
         img_torch, mask_torch, rel_pos, direct, img_original, mask_original, pad_bottom, pad_right = self.inpaint_preprocess(img, mask)
         
         precision = TORCH_DTYPE_MAP[self.precision]
-        if self.device in {'cuda'}:
-            try:
-                with torch.autocast(device_type=self.device, dtype=precision):
+        with torch.no_grad():
+            if self.device in {'cuda'}:
+                try:
+                    with torch.autocast(device_type=self.device, dtype=precision):
+                        img_inpainted_torch = self.model(img_torch, mask_torch, rel_pos, direct)
+                except Exception as e:
+                    self.logger.error(e)
+                    self.logger.error(f'{precision} inference is not supported for this device, use fp32 instead.')
                     img_inpainted_torch = self.model(img_torch, mask_torch, rel_pos, direct)
-            except Exception as e:
-                self.logger.error(e)
-                self.logger.error(f'{precision} inference is not supported for this device, use fp32 instead.')
+            else:
                 img_inpainted_torch = self.model(img_torch, mask_torch, rel_pos, direct)
-        else:
-            img_inpainted_torch = self.model(img_torch, mask_torch, rel_pos, direct)
 
         img_inpainted = (img_inpainted_torch.to(device='cpu', dtype=torch.float32).squeeze_(0).permute(1, 2, 0).numpy() * 255)
         img_inpainted = (np.clip(np.round(img_inpainted), 0, 255)).astype(np.uint8)
@@ -593,6 +634,7 @@ class LamaInpainterMPE(InpainterBase):
 
 @register_inpainter('lama_large_512px')
 class LamaLarge(LamaInpainterMPE):
+    dependencies = ['torch', 'torchvision', 'einops']
 
     params = {
         'inpaint_size': {
@@ -628,6 +670,8 @@ class LamaLarge(LamaInpainterMPE):
         self.precision = self.params['precision']['value']
 
     def _load_model(self):
+        from .lama import load_lama_mpe
+
         device = self.params['device']['value']
         precision = self.params['precision']['value']
 

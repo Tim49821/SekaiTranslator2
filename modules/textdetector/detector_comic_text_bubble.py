@@ -29,6 +29,7 @@ def _move_inputs_to_device(inputs, device: str):
 
 @register_textdetectors('comic_text_bubble')
 class ComicTextBubbleDetector(TextDetectorBase):
+    dependencies = ['torch', 'transformers==4.57.1', 'safetensors>=0.8.0rc0', 'huggingface_hub>=0.34.0']
     hf_model_repo_id = HF_MODEL_REPO_ID
     hf_model_save_dir = MODEL_PATH
     hf_model_required_files = ['config.json', 'model.safetensors', 'preprocessor_config.json']

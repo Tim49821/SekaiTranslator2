@@ -14,6 +14,7 @@ mit_params = {
     'device': DEVICE_SELECTOR(not_supported=['privateuseone']),
     'description': 'OCRMIT32px'
 }
+MIT_DEPENDENCIES = ['torch', 'einops']
 
 class MITModels(OCRBase):
 
@@ -45,6 +46,7 @@ class MITModels(OCRBase):
 from .mit32px import OCR32pxModel
 @register_OCR('mit32px')
 class OCRMIT32px(MITModels):
+    dependencies = MIT_DEPENDENCIES
 
     params = deepcopy(mit_params)
     download_file_list = [{
@@ -63,6 +65,7 @@ class OCRMIT32px(MITModels):
 from .mit48px_ctc import OCR48pxCTC
 @register_OCR('mit48px_ctc')
 class OCRMIT48pxCTC(MITModels):
+    dependencies = MIT_DEPENDENCIES
 
     params = deepcopy(mit_params)
     download_file_list = [{
@@ -82,6 +85,7 @@ from .mit48px import Model48pxOCR
 OCR48PXMODEL_PATH = r'data/models/ocr_ar_48px.ckpt'
 @register_OCR('mit48px')
 class OCRMIT48px(MITModels):
+    dependencies = MIT_DEPENDENCIES
 
     params = deepcopy(mit_params)
     download_file_list = [{

@@ -679,6 +679,9 @@ def _build_fixed_provider_params(
     return params
 
 
+LLM_TRANSLATOR_DEPENDENCIES = ['openai>=2.8.1', 'httpx[socks,brotli]', 'pydantic', 'json5']
+
+
 class _FixedProviderLLMTranslator(LLM_API_Translator):
     fixed_provider: str = ""
     params: Dict = {}
@@ -690,6 +693,7 @@ class _FixedProviderLLMTranslator(LLM_API_Translator):
 
 @register_translator("LLM OpenAI")
 class OpenAILLMTranslator(_FixedProviderLLMTranslator):
+    dependencies = LLM_TRANSLATOR_DEPENDENCIES
     fixed_provider = "OpenAI"
     params = _build_fixed_provider_params(
         LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -700,6 +704,7 @@ class OpenAILLMTranslator(_FixedProviderLLMTranslator):
 
 @register_translator("LLM Google")
 class GoogleLLMTranslator(_FixedProviderLLMTranslator):
+    dependencies = LLM_TRANSLATOR_DEPENDENCIES
     fixed_provider = "Google"
     params = _build_fixed_provider_params(
         LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -710,6 +715,7 @@ class GoogleLLMTranslator(_FixedProviderLLMTranslator):
 
 @register_translator("LLM Grok")
 class GrokLLMTranslator(_FixedProviderLLMTranslator):
+    dependencies = LLM_TRANSLATOR_DEPENDENCIES
     fixed_provider = "Grok"
     params = _build_fixed_provider_params(
         LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -720,6 +726,7 @@ class GrokLLMTranslator(_FixedProviderLLMTranslator):
 
 @register_translator("LLM OpenRouter")
 class OpenRouterLLMTranslator(_FixedProviderLLMTranslator):
+    dependencies = LLM_TRANSLATOR_DEPENDENCIES
     fixed_provider = "OpenRouter"
     params = _build_fixed_provider_params(
         LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -730,6 +737,7 @@ class OpenRouterLLMTranslator(_FixedProviderLLMTranslator):
 
 @register_translator("LLM Studio")
 class LLMStudioTranslator(_FixedProviderLLMTranslator):
+    dependencies = LLM_TRANSLATOR_DEPENDENCIES
     fixed_provider = "LLM Studio"
     params = _build_fixed_provider_params(
         LLM_PROVIDER_DESCRIPTIONS[fixed_provider],

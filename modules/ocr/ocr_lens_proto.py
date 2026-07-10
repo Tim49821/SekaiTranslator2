@@ -146,6 +146,8 @@ def _preprocess_image_for_lens(img: Image.Image) -> Tuple[Optional[bytes], int, 
 
 @register_OCR("google_lens_exp")
 class OCRLensAPI_exp(OCRBase):
+    dependencies = ['betterproto']
+
     """
     OCR using the experimental Google Lens Protobuf API (using requests).
     Requires 'betterproto', 'requests', and 'lens_betterproto.py'.

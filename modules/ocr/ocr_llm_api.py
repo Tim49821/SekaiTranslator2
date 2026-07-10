@@ -557,6 +557,9 @@ def _build_fixed_provider_params(
     return params
 
 
+LLM_OCR_DEPENDENCIES = ['openai>=2.8.1', 'httpx[socks,brotli]', 'pydantic']
+
+
 class _FixedProviderLLMOCR(LLM_OCR):
     fixed_provider: str = ""
     params: Dict = {}
@@ -568,6 +571,7 @@ class _FixedProviderLLMOCR(LLM_OCR):
 
 @register_OCR("LLM OCR OpenAI")
 class OpenAILLMOCR(_FixedProviderLLMOCR):
+    dependencies = LLM_OCR_DEPENDENCIES
     fixed_provider = "OpenAI"
     params = _build_fixed_provider_params(
         LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -578,6 +582,7 @@ class OpenAILLMOCR(_FixedProviderLLMOCR):
 
 @register_OCR("LLM OCR Google")
 class GoogleLLMOCR(_FixedProviderLLMOCR):
+    dependencies = LLM_OCR_DEPENDENCIES
     fixed_provider = "Google"
     params = _build_fixed_provider_params(
         LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -588,6 +593,7 @@ class GoogleLLMOCR(_FixedProviderLLMOCR):
 
 @register_OCR("LLM OCR Grok")
 class GrokLLMOCR(_FixedProviderLLMOCR):
+    dependencies = LLM_OCR_DEPENDENCIES
     fixed_provider = "Grok"
     params = _build_fixed_provider_params(
         LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -598,6 +604,7 @@ class GrokLLMOCR(_FixedProviderLLMOCR):
 
 @register_OCR("LLM OCR OpenRouter")
 class OpenRouterLLMOCR(_FixedProviderLLMOCR):
+    dependencies = LLM_OCR_DEPENDENCIES
     fixed_provider = "OpenRouter"
     params = _build_fixed_provider_params(
         LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -608,6 +615,7 @@ class OpenRouterLLMOCR(_FixedProviderLLMOCR):
 
 @register_OCR("LLM OCR Studio")
 class LLMStudioOCR(_FixedProviderLLMOCR):
+    dependencies = LLM_OCR_DEPENDENCIES
     fixed_provider = "LLM Studio"
     params = _build_fixed_provider_params(
         LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
@@ -618,6 +626,7 @@ class LLMStudioOCR(_FixedProviderLLMOCR):
 
 @register_OCR("LLM OCR Ollama")
 class OllamaLLMOCR(_FixedProviderLLMOCR):
+    dependencies = LLM_OCR_DEPENDENCIES
     fixed_provider = "Ollama"
     params = _build_fixed_provider_params(
         LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],

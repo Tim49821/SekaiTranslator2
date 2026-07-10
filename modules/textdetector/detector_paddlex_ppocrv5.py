@@ -526,9 +526,11 @@ class PaddleXPPocrV5DetectorBase(TextDetectorBase):
 
 @register_textdetectors("PP-OCRv5_server_det")
 class PPOCRv5ServerDetector(PaddleXPPocrV5DetectorBase):
+    dependencies = ['paddlepaddle>=3.3.0,<4.0.0', 'paddleocr[doc-parser]==3.5.0']
     paddlex_model_name = "PP-OCRv5_server_det"
 
 
 @register_textdetectors("PP-OCRv5_mobile_det")
 class PPOCRv5MobileDetector(PaddleXPPocrV5DetectorBase):
+    dependencies = ['paddlepaddle>=3.3.0,<4.0.0', 'paddleocr[doc-parser]==3.5.0']
     paddlex_model_name = "PP-OCRv5_mobile_det"

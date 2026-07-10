@@ -1,7 +1,7 @@
 import json, os, traceback
 import os.path as osp
 import copy
-from typing import Callable
+from typing import Callable, Optional
 
 from . import shared
 from .fontformat import FontFormat
@@ -83,6 +83,7 @@ class ModuleConfig(Config):
     translator: str = "google"
     enable_detect: bool = True
     keep_exist_textlines: bool = False
+    filter_mask_by_bboxes: bool = False
     enable_ocr: bool = True
     enable_translate: bool = True
     enable_inpaint: bool = True
@@ -172,10 +173,26 @@ class DrawPanelConfig(Config):
     rectool_method: int = 0
     recttool_dilate_ksize: int = 0
 
+
+@nested_dataclass
+class PackageManagerConfig(Config):
+    auto_install_missing_packages: bool = True
+    installer_backend: str = 'auto'
+    extra_install_args: str = ''
+
+
+@nested_dataclass
+class NetworkMirrorsConfig(Config):
+    huggingface: Optional[str] = None
+    pypi: Optional[str] = None
+
+
 @nested_dataclass
 class ProgramConfig(Config):
 
     module: ModuleConfig = field(default_factory=lambda: ModuleConfig())
+    package_manager: PackageManagerConfig = field(default_factory=lambda: PackageManagerConfig())
+    mirrors: NetworkMirrorsConfig = field(default_factory=lambda: NetworkMirrorsConfig())
     drawpanel: DrawPanelConfig = field(default_factory=lambda: DrawPanelConfig())
     global_fontformat: FontFormat = field(default_factory=lambda: FontFormat())
     recent_proj_list: List = field(default_factory=lambda: list())
@@ -186,6 +203,7 @@ class ProgramConfig(Config):
     mask_transparency: float = 0.
     original_transparency: float = 0.
     open_recent_on_startup: bool = True 
+    check_update_on_startup: bool = True
 
     let_fntsize_flag: int = 0
     let_fntstroke_flag: int = 0
@@ -407,6 +425,23 @@ def load_config(config_path: str = shared.CONFIG_PATH):
     except Exception as e:
         LOGGER.warning(f'Failed to copy LLM API keys to .env: {e}')
     pcfg.merge(config)
+    try:
+        from utils.network_mirrors import (
+            backfill_missing_mirror_defaults,
+            collect_system_locale_names,
+            collect_system_timezone_names,
+            missing_mirror_fields,
+        )
+        updated = backfill_missing_mirror_defaults(
+            pcfg.mirrors,
+            missing_mirror_fields(shared.CONFIG_PATH),
+            locale_names=collect_system_locale_names(),
+            timezone_names=collect_system_timezone_names(),
+        )
+        if updated:
+            LOGGER.info(f'Network mirror defaults filled for: {", ".join(updated)}')
+    except Exception as e:
+        LOGGER.debug(f'Failed to backfill network mirror defaults: {e}')
 
     p = pcfg.text_styles_path
     if not osp.exists(pcfg.text_styles_path):

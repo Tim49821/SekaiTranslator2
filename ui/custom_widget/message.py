@@ -90,7 +90,7 @@ class TaskProgressBar(Widget):
         layout.addWidget(self.progressbar)
         self.updateProgress(0)
 
-    def updateProgress(self, progress: int, msg: str = ''):
+    def updateProgress(self, progress: int, msg: str = '', verbose_msg: str = None):
         self.progressbar.setValue(progress)
         if self.description:
             msg = self.description + msg
@@ -103,7 +103,9 @@ class TaskProgressBar(Widget):
         self.progressbar.setValue(progress)
 
         if self.verbose:
-            if progress == 0:
+            if verbose_msg:
+                self.verbose_label.setText(verbose_msg)
+            elif progress == 0:
                 self.verbose_label.setText('')
                 self.start_time = time.time()
             elif progress == 100:
@@ -138,17 +140,26 @@ class ProgressMessageBox(QDialog):
         layout.setContentsMargins(20, 10, 20, 30)
 
         self.task_progress_bar: TaskProgressBar = None
+        self.stop_button = None
         if task_name is not None:
             self.task_progress_bar = TaskProgressBar(task_name, True)
             layout.addWidget(self.task_progress_bar)
+        if show_stop_btn:
+            self.stop_button = QPushButton(self.tr('Stop'), self)
+            self.stop_button.clicked.connect(self.on_stop_clicked)
+            button_layout = QHBoxLayout()
+            button_layout.addStretch()
+            button_layout.addWidget(self.stop_button)
+            button_layout.addStretch()
+            layout.addLayout(button_layout)
 
     def on_stop_clicked(self):
         self.stop_clicked.emit()
         self.hide()
 
-    def updateTaskProgress(self, value: int, msg: str = ''):
+    def updateTaskProgress(self, value: int, msg: str = '', verbose_msg: str = None):
         if self.task_progress_bar is not None:
-            self.task_progress_bar.updateProgress(value, msg)
+            self.task_progress_bar.updateProgress(value, msg, verbose_msg)
 
     def setTaskName(self, task_name: str):
         if self.task_progress_bar is not None:
@@ -157,6 +168,10 @@ class ProgressMessageBox(QDialog):
     def zero_progress(self):
         if self.task_progress_bar is not None:
             self.task_progress_bar.updateProgress(0)
+
+    def show_fitted(self):
+        self.setFixedWidth(self.sizeHint().width())
+        self.show()
 
     def showEvent(self, e: QShowEvent) -> None:
         self.showed.emit()

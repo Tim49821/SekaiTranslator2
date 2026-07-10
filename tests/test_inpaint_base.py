@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 
-from modules.inpaint.base import InpainterBase
+from modules.inpaint.base import InpainterBase, filter_mask_by_bboxes
 from modules.inpaint.inpaint_sdxl import SDXLInpainter
 from utils.textblock import TextBlock
 from utils.textblock_mask import refine_inpaint_mask_quality
@@ -126,6 +126,16 @@ class InpainterBaseTest(unittest.TestCase):
 
         np.testing.assert_array_equal(result[8, 8], [10, 20, 30])
         self.assertEqual(inpainter.calls, 1)
+
+    def test_filter_mask_by_bboxes_keeps_only_textblock_regions(self):
+        mask = np.full((24, 24), 255, dtype=np.uint8)
+        blocks = [TextBlock([6, 6, 12, 12])]
+
+        filtered = filter_mask_by_bboxes(mask, blocks)
+
+        self.assertEqual(filtered[8, 8], 255)
+        self.assertEqual(filtered[0, 0], 0)
+        self.assertEqual(filtered[23, 23], 0)
 
     def test_refine_inpaint_mask_quality_cleans_fills_and_limits_to_balloon(self):
         mask = np.zeros((14, 14), dtype=np.uint8)

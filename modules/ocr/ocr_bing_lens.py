@@ -260,6 +260,8 @@ def format_bing_ocr_result(result):
 
 @register_OCR('bing_ocr')
 class OCRBingAPI(OCRBase):
+    dependencies = ['httpx[socks,brotli]']
+
     params = {
         "delay": 1.0,
         'newline_handling': {

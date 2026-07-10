@@ -40,6 +40,8 @@ if PADDLE_OCR_AVAILABLE:
 
     @register_OCR("paddle_ocr")
     class PaddleOCRModule(OCRBase):
+        dependencies = ['paddlepaddle>=3.3.0,<4.0.0', 'paddleocr[doc-parser]==3.5.0']
+
         # Mapping language names to PaddleOCR codes
         lang_map = {
             "Chinese & English": "ch",

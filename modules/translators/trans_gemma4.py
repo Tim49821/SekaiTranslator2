@@ -267,6 +267,8 @@ class LocalGGUFTranslator(BaseTranslator):
 
 @register_translator("Gemma 4 E4B-it")
 class Gemma4E4BTranslator(LocalGGUFTranslator):
+    dependencies = ['huggingface_hub>=0.34.0']
+
     model_log_name = "Gemma4 GGUF"
     model_repo_id = MODEL_REPO_ID
     model_dir = MODEL_DIR

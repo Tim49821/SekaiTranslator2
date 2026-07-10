@@ -26,6 +26,43 @@ shutil.register_unpack_format('7zip', ['.7z'], unpack_7zarchive)
 READ_DATA_CHUNK = 128 * 1024
 INSECURE_DOWNLOAD_ENV = 'BALLOONTRANS_ALLOW_INSECURE_DOWNLOADS'
 
+
+class DownloadCancelled(Exception):
+    pass
+
+
+def _cancel_requested(cancel_event=None):
+    return cancel_event is not None and cancel_event.is_set()
+
+
+def _raise_if_cancelled(cancel_event=None):
+    if _cancel_requested(cancel_event):
+        raise DownloadCancelled('Download cancelled by user.')
+
+
+def _notify_progress(progress_callback=None, **payload):
+    if progress_callback is not None:
+        progress_callback(payload)
+
+
+def _configured_huggingface_mirror():
+    try:
+        from utils.config import pcfg
+    except Exception:
+        return None
+    return getattr(getattr(pcfg, 'mirrors', None), 'huggingface', None)
+
+
+def _rewrite_configured_url(url: str, log_mirror: bool = False) -> str:
+    try:
+        from utils.network_mirrors import rewrite_huggingface_url
+        rewritten_url = rewrite_huggingface_url(url, _configured_huggingface_mirror())
+    except Exception:
+        rewritten_url = url
+    if log_mirror and rewritten_url != url:
+        LOGGER.info(f'Using Hugging Face mirror for model download: {url} -> {rewritten_url}')
+    return rewritten_url
+
 def calculate_sha256(filename):
     hash_sha256 = hashlib.sha256()
     blksize = 1024 * 1024
@@ -54,7 +91,7 @@ def sizeof_fmt(size, suffix='B'):
     return f'{size:3.1f} Y{suffix}'
 
 
-def download_file_from_google_drive(file_id, save_path):
+def download_file_from_google_drive(file_id, save_path, progress_callback=None, cancel_event=None):
     """Download files from google drive.
 
     Ref:
@@ -85,7 +122,7 @@ def download_file_from_google_drive(file_id, save_path):
     else:
         file_size = None
 
-    save_response_content(response, save_path, file_size)
+    save_response_content(response, save_path, file_size, progress_callback=progress_callback, cancel_event=cancel_event)
 
 
 def get_confirm_token(response):
@@ -95,7 +132,7 @@ def get_confirm_token(response):
     return None
 
 
-def save_response_content(response, destination, file_size=None, chunk_size=32768):
+def save_response_content(response, destination, file_size=None, chunk_size=32768, progress_callback=None, cancel_event=None):
     destination = os.path.expanduser(destination)
     save_dir = osp.dirname(destination)
     if save_dir and not osp.exists(save_dir):
@@ -114,9 +151,17 @@ def save_response_content(response, destination, file_size=None, chunk_size=3276
         with open(tmp_dst, 'wb') as f:
             downloaded_size = 0
             for chunk in response.iter_content(chunk_size):
+                _raise_if_cancelled(cancel_event)
                 if chunk:  # filter out keep-alive new chunks
                     downloaded_size += len(chunk)
                     f.write(chunk)
+                    _notify_progress(
+                        progress_callback,
+                        event='file_progress',
+                        downloaded=min(downloaded_size, file_size or downloaded_size),
+                        total=file_size,
+                        path=destination,
+                    )
                     if pbar is not None:
                         pbar.update(1)
                         pbar.set_description(f'Download {sizeof_fmt(downloaded_size)} / {readable_file_size}')
@@ -142,7 +187,9 @@ def download_url_to_file(
     url: str,
     dst: str,
     hash_prefix: Optional[str] = None,
-    progress: bool = True
+    progress: bool = True,
+    progress_callback=None,
+    cancel_event=None,
 ) -> None:
     r"""Download object at the given URL to a local path.
 
@@ -163,6 +210,8 @@ def download_url_to_file(
         ... )
 
     """
+    _raise_if_cancelled(cancel_event)
+    url = _rewrite_configured_url(url, log_mirror=True)
     file_size = None
     req = Request(url, headers={"User-Agent": "torch.hub"})
     u = urlopen(req, context=_download_ssl_context())
@@ -195,8 +244,10 @@ def download_url_to_file(
         raise FileExistsError(errno.EEXIST, "No usable temporary file name found")
 
     try:
+        _notify_progress(progress_callback, event='file_start', path=dst, url=url, total=file_size, downloaded=0)
         if hash_prefix is not None:
             sha256 = hashlib.sha256()
+        downloaded_size = 0
         with tqdm(
             total=file_size,
             disable=not progress,
@@ -205,13 +256,23 @@ def download_url_to_file(
             unit_divisor=1024,
         ) as pbar:
             while True:
+                _raise_if_cancelled(cancel_event)
                 buffer = u.read(READ_DATA_CHUNK)
                 if len(buffer) == 0:
                     break
                 f.write(buffer)  # type: ignore[possibly-undefined]
                 if hash_prefix is not None:
                     sha256.update(buffer)  # type: ignore[possibly-undefined]
+                downloaded_size += len(buffer)
                 pbar.update(len(buffer))
+                _notify_progress(
+                    progress_callback,
+                    event='file_progress',
+                    path=dst,
+                    url=url,
+                    downloaded=downloaded_size,
+                    total=file_size,
+                )
 
         f.close()
         if hash_prefix is not None:
@@ -220,7 +281,9 @@ def download_url_to_file(
                 raise RuntimeError(
                     f'invalid hash value (expected "{hash_prefix}", got "{digest}")'
                 )
+        _raise_if_cancelled(cancel_event)
         shutil.move(f.name, dst)
+        _notify_progress(progress_callback, event='file_done', path=dst, url=url, downloaded=file_size, total=file_size)
     finally:
         u.close()
         if f is not None and not f.closed:
@@ -279,11 +342,14 @@ def try_download_files(url: str,
                         concatenate_url_filename: int = 0,
                         cache_hash: bool = False,
                         download_method: str = '',
-                        gdrive_file_id: str = None):
+                        gdrive_file_id: str = None,
+                        progress_callback=None,
+                        cancel_event=None):
     
     all_successful = True
     
     for file, savep, sha256_precal in zip(files, save_files, sha256_pre_calculated):
+        _raise_if_cancelled(cancel_event)
         save_dir = osp.dirname(savep)
         if not osp.exists(save_dir):
             os.makedirs(save_dir)
@@ -303,17 +369,22 @@ def try_download_files(url: str,
             else:
                 download_url = url
 
+            download_url = _rewrite_configured_url(download_url, log_mirror=True)
+            _notify_progress(progress_callback, event='file_check', file=file, path=savep, url=download_url)
             if gdrive_file_id is not None:
-                download_file_from_google_drive(gdrive_file_id, savep)
+                download_file_from_google_drive(gdrive_file_id, savep, progress_callback=progress_callback, cancel_event=cancel_event)
             else:
                 LOGGER.info(f'downloading {savep} from {download_url} ...')
-                download_url_to_file(download_url, savep)
+                download_url_to_file(download_url, savep, progress_callback=progress_callback, cancel_event=cancel_event)
             file_exists, valid_hash, sha256_calculated = check_local_file(savep, sha256_precal, cache_hash=cache_hash)
             if not file_exists:
                 raise Exception(f'Some how the downloaded {savep} doesnt exists.')
             elif not valid_hash:
                 raise Exception(f'Mismatch between newly downloaded {savep} and pre-calculated hash: "{sha256_calculated}" <-> "{sha256_precal.lower()}"')
 
+        except DownloadCancelled:
+            LOGGER.info(f'Download cancelled while downloading {file} from {download_url}')
+            raise
         except:
             err_msg = traceback.format_exc()
             all_successful = False
@@ -332,7 +403,9 @@ def download_and_check_files(url: str,
                         archive_sha256_pre_calculated: Union[str, List] = None,
                         save_dir: str = None,
                         download_method: str = 'torch_hub',
-                        gdrive_file_id: str = None):
+                        gdrive_file_id: str = None,
+                        progress_callback=None,
+                        cancel_event=None):
         
     def _wrap_up_checkinputs(files: Union[str, List], save_files: Union[str, List] = None, sha256_pre_calculated: Union[str, List] = None, save_dir: str = None):
         '''
@@ -371,9 +444,21 @@ def download_and_check_files(url: str,
     files, save_files, sha256_pre_calculated = _wrap_up_checkinputs(files, save_files, sha256_pre_calculated, save_dir)
 
     if archived_files is None:
-        return try_download_files(url, files, save_files, sha256_pre_calculated, concatenate_url_filename, cache_hash=True, download_method=download_method, gdrive_file_id=gdrive_file_id)
+        return try_download_files(
+            url,
+            files,
+            save_files,
+            sha256_pre_calculated,
+            concatenate_url_filename,
+            cache_hash=True,
+            download_method=download_method,
+            gdrive_file_id=gdrive_file_id,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
 
     # handle archived
+    _raise_if_cancelled(cancel_event)
     if _all_valid(save_files, sha256_pre_calculated):
         return [], None
     
@@ -383,7 +468,18 @@ def download_and_check_files(url: str,
     # download archive files
     tmp_downloaded_archives = [osp.join(shared.cache_dir, archive_name) for archive_name in archived_files]
     _, _, archive_sha256_pre_calculated = _wrap_up_checkinputs(archived_files, tmp_downloaded_archives, archive_sha256_pre_calculated)
-    archive_downloaded = try_download_files(url, archived_files, tmp_downloaded_archives, archive_sha256_pre_calculated, concatenate_url_filename, cache_hash=False, download_method=download_method, gdrive_file_id=gdrive_file_id)
+    archive_downloaded = try_download_files(
+        url,
+        archived_files,
+        tmp_downloaded_archives,
+        archive_sha256_pre_calculated,
+        concatenate_url_filename,
+        cache_hash=False,
+        download_method=download_method,
+        gdrive_file_id=gdrive_file_id,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )
     if not archive_downloaded:
         return False
     
@@ -392,14 +488,17 @@ def download_and_check_files(url: str,
     extract_dir = osp.join(shared.cache_dir, 'tmp_extract')
     os.makedirs(extract_dir, exist_ok=True)
     LOGGER.info(f'Extracting {archivep} ...')
+    _notify_progress(progress_callback, event='archive_extract', path=archivep, total=None, downloaded=None)
     shutil.unpack_archive(archivep, extract_dir)
 
     all_valid = True
     for file, savep, sha256_precal in zip(files, save_files, sha256_pre_calculated):
+        _raise_if_cancelled(cancel_event)
         unarchived = osp.join(extract_dir, file)
         save_dir = osp.dirname(savep)
         if not osp.exists(save_dir):
             os.makedirs(save_dir)
+        _notify_progress(progress_callback, event='archive_move', path=savep, file=file)
         shutil.move(unarchived, savep)
         file_exists, valid_hash, sha256_calculated = check_local_file(savep, sha256_precal, cache_hash=True)
         if not file_exists:

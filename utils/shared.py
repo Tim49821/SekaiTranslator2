@@ -122,6 +122,8 @@ FONT_FAMILIES: set = None
 CUSTOM_FONTS = []
 pbar = {}
 runtime_widget_set = set()
+TORCH_INSTALL_PREFERRED_DEVICE = None
+TORCH_INSTALL_PREFERRED_PROFILE = None
 
 def add_to_runtime_widget_set(widget):
     runtime_widget_set.add(widget)

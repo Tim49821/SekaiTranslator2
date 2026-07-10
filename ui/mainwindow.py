@@ -8,7 +8,7 @@ import cv2
 
 from tqdm import tqdm
 from qtpy.QtWidgets import QAction, QFileDialog, QMenu, QHBoxLayout, QVBoxLayout, QApplication, QStackedWidget, QSplitter, QListWidget, QShortcut, QListWidgetItem, QMessageBox, QTextEdit, QPlainTextEdit
-from qtpy.QtCore import Qt, QPoint, QSize, QEvent, Signal, QUrl
+from qtpy.QtCore import Qt, QPoint, QSize, QEvent, Signal, QUrl, QTimer
 from qtpy.QtGui import QContextMenuEvent, QTextCursor, QGuiApplication, QIcon, QCloseEvent, QKeySequence, QKeyEvent, QPainter, QClipboard, QImage, QDesktopServices
 
 from utils.logger import logger as LOGGER
@@ -16,7 +16,7 @@ from utils.text_processing import is_cjk, full_len, half_len
 from utils.textblock import TextBlock, TextAlignment
 from utils import shared
 from utils.message import create_error_dialog, create_info_dialog
-from modules import GET_VALID_TEXTDETECTORS, GET_VALID_INPAINTERS, GET_VALID_TRANSLATORS, GET_VALID_OCR
+from modules import GET_VALID_TEXTDETECTORS, GET_VALID_INPAINTERS, GET_VALID_TRANSLATORS, GET_VALID_OCR, TRANSLATORS
 from .misc import parse_stylesheet, set_html_family, QKEY
 from utils.config import ProgramConfig, pcfg, save_config, text_styles, save_text_styles, load_textstyle_from, FontFormat
 from utils.font_loader import FONT_EXTENSIONS, add_application_font
@@ -25,6 +25,7 @@ from utils.proj_imgtrans import ProjImgTrans
 from .canvas import Canvas
 from .configpanel import ConfigPanel
 from .module_manager import ModuleManager
+from .update_thread import UpdateCheckThread
 from .threading_utils import wait_if_running
 from .textedit_area import SourceTextEdit, SelectTextMiniMenu, TransTextEdit
 from .drawingpanel import DrawingPanel
@@ -123,6 +124,10 @@ class MainWindow(mainwindow_cls):
         self.export_doc_thread.fin_io.connect(self.on_fin_export_doc)
         self.import_doc_thread = ImportDocThread(self)
         self.import_doc_thread.fin_io.connect(self.on_fin_import_doc)
+        self.update_thread = UpdateCheckThread()
+        self.update_thread.update_progress.connect(self.on_update_progress)
+        self.update_thread.finish_check.connect(self.on_update_finished)
+        self.update_thread.failed.connect(self.on_update_failed)
 
     def resetStyleSheet(self, reverse_icon: bool = False):
         theme = 'eva-dark' if pcfg.darkmode else 'eva-light'
@@ -338,6 +343,9 @@ class MainWindow(mainwindow_cls):
         self.workflowSettingsPanel.inpaint_selector.cfg_clicked.connect(self.to_inpaint_config)
         self.workflowSettingsPanel.ocr_selector.cfg_clicked.connect(self.to_ocr_config)
         self.workflowSettingsPanel.ocr_selector.selector.currentTextChanged.connect(self.on_ocr_changed)
+        self.workflowSettingsPanel.textdet_selector.setSelectedValue(pcfg.module.textdetector)
+        self.workflowSettingsPanel.ocr_selector.setSelectedValue(pcfg.module.ocr)
+        self.workflowSettingsPanel.inpaint_selector.setSelectedValue(pcfg.module.inpainter)
         self.workflowSettingsPanel.textdet_selector.setVisible(pcfg.module.enable_detect)
         self.workflowSettingsPanel.ocr_selector.setVisible(pcfg.module.enable_ocr)
         self.workflowSettingsPanel.trans_selector.setVisible(pcfg.module.enable_translate)
@@ -369,6 +377,10 @@ class MainWindow(mainwindow_cls):
         module_manager.imgtrans_pipeline_finished.connect(self.on_imgtrans_pipeline_finished)
         module_manager.page_trans_finished.connect(self.on_pagtrans_finished)
         module_manager.setupThread(self.configPanel, self.imgtrans_progress_msgbox, self.ocr_postprocess, self.translate_preprocess, self.translate_postprocess)
+        self.configPanel.detect_config_panel.setDetector(pcfg.module.textdetector)
+        self.configPanel.ocr_config_panel.setOCR(pcfg.module.ocr)
+        self.configPanel.inpaint_config_panel.setInpainter(pcfg.module.inpainter)
+        self._set_translator_selector_values_from_config()
         module_manager.progress_msgbox.showed.connect(self.on_imgtrans_progressbox_showed)
         module_manager.blktrans_pipeline_finished.connect(self.on_blktrans_finished)
         module_manager.imgtrans_thread.post_process_mask = self.drawingPanel.rectPanel.post_process_mask
@@ -376,10 +388,7 @@ class MainWindow(mainwindow_cls):
         module_manager.translate_thread.finish_set_module.connect(self.on_finish_settranslator)
         module_manager.textdetect_thread.finish_set_module.connect(self.on_finish_setdetector)
         module_manager.ocr_thread.finish_set_module.connect(self.on_finish_setocr)
-        module_manager.setTextDetector()
-        module_manager.setOCR()
-        module_manager.setTranslator()
-        module_manager.setInpainter()
+        module_manager.setConfiguredModulesOnStartup()
 
         self.leftBar.run_imgtrans_clicked.connect(self.run_imgtrans)
 
@@ -394,6 +403,7 @@ class MainWindow(mainwindow_cls):
 
         self.configPanel.setupConfig()
         self.configPanel.save_config.connect(self.save_config)
+        self.configPanel.check_update.connect(self.checkUpdate)
         self.configPanel.reload_textstyle.connect(self.load_textstyle_from_proj_dir)
         self.configPanel.show_only_custom_font.connect(self.on_show_only_custom_font)
         self.textPanel.formatpanel.import_font_clicked.connect(self.import_fonts)
@@ -442,6 +452,122 @@ class MainWindow(mainwindow_cls):
             LOGGER.error(traceback.format_exc())
             pcfg.mt_sublist = []
             self.mtSubWidget.loadCfgSublist(pcfg.mt_sublist)
+
+        self._update_check_silent = False
+        if pcfg.check_update_on_startup and not shared.is_headless():
+            QTimer.singleShot(2500, lambda: self.checkUpdate(silent=True))
+
+    def _set_translator_selector_values_from_config(self):
+        spec = TRANSLATORS.get_spec(pcfg.module.translator)
+        src_list = getattr(spec, 'supported_src_list', None) or [pcfg.module.translate_source]
+        tgt_list = getattr(spec, 'supported_tgt_list', None) or [pcfg.module.translate_target]
+        selector_sets = [
+            (
+                self.workflowSettingsPanel.trans_selector.selector,
+                self.workflowSettingsPanel.trans_selector.src_selector,
+                self.workflowSettingsPanel.trans_selector.tgt_selector,
+            ),
+            (
+                self.configPanel.trans_config_panel.module_combobox,
+                self.configPanel.trans_config_panel.source_combobox,
+                self.configPanel.trans_config_panel.target_combobox,
+            ),
+        ]
+        for module_selector, src_selector, tgt_selector in selector_sets:
+            for selector in (module_selector, src_selector, tgt_selector):
+                selector.blockSignals(True)
+            src_selector.clear()
+            tgt_selector.clear()
+            src_selector.addItems(src_list)
+            tgt_selector.addItems(tgt_list)
+            module_selector.setCurrentText(pcfg.module.translator)
+            src_selector.setCurrentText(pcfg.module.translate_source)
+            tgt_selector.setCurrentText(pcfg.module.translate_target)
+            for selector in (module_selector, src_selector, tgt_selector):
+                selector.blockSignals(False)
+
+    def _set_update_check_busy(self, busy: bool):
+        if not hasattr(self, 'configPanel'):
+            return
+        button = getattr(self.configPanel, 'check_update_btn', None)
+        if button is None:
+            return
+        button.setEnabled(not busy)
+        button.setText(self.tr('Checking...') if busy else self.tr('Check update'))
+
+    def checkUpdate(self, silent: bool = False):
+        if self.update_thread.isRunning():
+            return
+        self._update_check_silent = silent
+        self._set_update_check_busy(True)
+        latest_label = getattr(self.configPanel, 'latest_version_label', None)
+        if latest_label is not None:
+            latest_label.setText(self.tr('Latest version: ') + self.tr('Checking...'))
+        self.update_thread.checkUpdate()
+
+    def on_update_progress(self, payload: dict):
+        message = payload.get('message') or payload.get('event') or ''
+        latest_label = getattr(self.configPanel, 'latest_version_label', None)
+        if latest_label is not None and message:
+            latest_label.setText(self.tr('Latest version: ') + str(message))
+
+    def on_update_finished(self, result):
+        self._set_update_check_busy(False)
+        latest_label = getattr(self.configPanel, 'latest_version_label', None)
+        if latest_label is not None:
+            if result.release_url:
+                latest_label.setText(
+                    self.tr('Latest version: ')
+                    + f'<a href="{result.release_url}">{result.latest_version}</a>'
+                )
+            else:
+                latest_label.setText(self.tr('Latest version: ') + result.latest_version)
+
+        if result.status == 'up_to_date':
+            if not self._update_check_silent:
+                create_info_dialog(
+                    self.tr('Already up to date: ')
+                    + f'{result.current_version} -> {result.latest_version}'
+                )
+            return
+
+        if result.status == 'available':
+            if self._update_check_silent:
+                LOGGER.info(f'Update available: {result.current_version} -> {result.latest_version}')
+                return
+            msgbox = QMessageBox(self)
+            msgbox.setIcon(QMessageBox.Information)
+            msgbox.setWindowTitle(self.tr('Update available'))
+            msgbox.setText(
+                self.tr('A new upstream release is available: ')
+                + f'{result.current_version} -> {result.latest_version}'
+            )
+            msgbox.setInformativeText(
+                self.tr('Automatic source replacement is disabled for this fork. Open the release page?')
+            )
+            open_btn = msgbox.addButton(self.tr('Open Release'), QMessageBox.AcceptRole)
+            msgbox.addButton(self.tr('Close'), QMessageBox.RejectRole)
+            msgbox.exec()
+            if msgbox.clickedButton() is open_btn and result.release_url:
+                QDesktopServices.openUrl(QUrl(result.release_url))
+            return
+
+        if result.status == 'manual_update_required':
+            create_info_dialog(result.git_message or self.tr('Manual update is required.'))
+            return
+
+        if result.status == 'updated':
+            create_info_dialog(
+                self.tr('Updated to ') + result.latest_version + '\n' + (result.git_message or '')
+            )
+
+    def on_update_failed(self, exception):
+        self._set_update_check_busy(False)
+        latest_label = getattr(self.configPanel, 'latest_version_label', None)
+        if latest_label is not None:
+            latest_label.setText(self.tr('Latest version: ') + self.tr('Check failed'))
+        if not getattr(self, '_update_check_silent', False):
+            create_error_dialog(exception, self.tr('Failed to check updates'), 'CheckUpdate')
 
     def setupImgTransUI(self):
         self.centralStackWidget.setCurrentIndex(0)

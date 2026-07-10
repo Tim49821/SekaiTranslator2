@@ -8,6 +8,14 @@ from .custom_widget import ConfigComboBox, Widget
 from utils.config import pcfg
 from utils import shared as C
 from utils.shared import CONFIG_FONTSIZE_CONTENT, CONFIG_FONTSIZE_HEADER, CONFIG_FONTSIZE_TABLE, CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_LONG, CONFIG_COMBOBOX_MIDEAN
+from utils.version import APP_VERSION
+from utils.network_mirrors import (
+    HUGGINGFACE_MIRROR_OPTIONS,
+    PYPI_MIRROR_OPTIONS,
+    display_options,
+    mirror_from_display,
+    mirror_to_display,
+)
 from .module_parse_widgets import InpaintConfigPanel, TextDetectConfigPanel, TranslatorConfigPanel, OCRConfigPanel
 
 class CustomIntValidator(QIntValidator):
@@ -339,6 +347,8 @@ class ConfigPanel(Widget):
 
     save_config = Signal()
     unload_models = Signal()
+    prepare_selected_modules = Signal()
+    check_update = Signal()
     reload_textstyle = Signal(bool)
     show_only_custom_font = Signal(bool)
 
@@ -376,9 +386,20 @@ class ConfigPanel(Widget):
         self.load_model_checker, msublock = checkbox_with_label(self.tr('Load models on demand'), discription=self.tr('Load models on demand to save memory.'))
         self.load_model_checker.stateChanged.connect(self.on_load_model_changed)
         dlConfigPanel.vlayout.addWidget(msublock)
+        self.package_auto_install_checker, msublock = checkbox_with_label(
+            self.tr('Auto install missing packages'),
+            discription=self.tr('Install missing Python packages automatically when a selected module requires them.'),
+        )
+        self.package_auto_install_checker.stateChanged.connect(self.on_package_auto_install_changed)
+        dlConfigPanel.vlayout.addWidget(msublock)
         self.empty_runcache_checker, msublock = checkbox_with_label(self.tr('Empty cache after RUN'), discription=self.tr('Empty cache after RUN to save memory.'))
         dlConfigPanel.vlayout.addWidget(msublock)
         self.empty_runcache_checker.stateChanged.connect(self.on_runcache_changed)
+        self.prepare_modules_btn = QPushButton(parent=self)
+        self.prepare_modules_btn.setFixedWidth(500)
+        self.prepare_modules_btn.setText(self.tr('Prepare Selected Modules'))
+        self.prepare_modules_btn.clicked.connect(self.prepare_selected_modules)
+        msublock.layout().addWidget(self.prepare_modules_btn)
         self.unload_model_btn = QPushButton(parent=self)
         self.unload_model_btn.setFixedWidth(500)
         self.unload_model_btn.setText(self.tr('Unload All Models'))
@@ -397,6 +418,7 @@ class ConfigPanel(Widget):
         dlConfigPanel.addTextLabel(label_inpaint)
         self.inpaint_config_panel = InpaintConfigPanel(self.tr('Inpainter'), scrollWidget=self)
         self.inpaint_sub_block = dlConfigPanel.addBlockWidget(self.inpaint_config_panel)
+        self.inpaint_config_panel.filter_mask_by_bboxes_checker.clicked.connect(self.on_filter_mask_by_bboxes_clicked)
 
         dlConfigPanel.addTextLabel(label_translator)
         self.trans_config_panel = TranslatorConfigPanel(label_translator, scrollWidget=self)
@@ -405,6 +427,49 @@ class ConfigPanel(Widget):
         generalConfigPanel.addTextLabel(label_startup)
         self.open_on_startup_checker, _ = generalConfigPanel.addCheckBox(self.tr('Reopen last project on startup'))
         self.open_on_startup_checker.stateChanged.connect(self.on_open_onstartup_changed)
+        self.check_update_on_startup_checker, _ = generalConfigPanel.addCheckBox(self.tr('Check update on startup'))
+        self.check_update_on_startup_checker.stateChanged.connect(self.on_check_update_onstartup_changed)
+
+        update_status_widget = QWidget()
+        update_status_layout = QHBoxLayout(update_status_widget)
+        update_status_layout.setContentsMargins(0, 0, 0, 0)
+        update_status_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.check_update_btn = QPushButton(parent=self)
+        self.check_update_btn.setFixedWidth(160)
+        self.check_update_btn.setText(self.tr('Check update'))
+        self.check_update_btn.clicked.connect(self.check_update)
+        self.current_version_label = ConfigTextLabel(
+            self.tr('Current version: ') + APP_VERSION,
+            CONFIG_FONTSIZE_CONTENT,
+            QFont.Weight.Normal,
+        )
+        self.latest_version_label = ConfigTextLabel(
+            self.tr('Latest version: ') + self.tr('Not checked'),
+            CONFIG_FONTSIZE_CONTENT,
+            QFont.Weight.Normal,
+        )
+        update_status_layout.addWidget(self.check_update_btn)
+        update_status_layout.addSpacing(20)
+        update_status_layout.addWidget(self.current_version_label)
+        update_status_layout.addSpacing(20)
+        update_status_layout.addWidget(self.latest_version_label)
+        generalConfigPanel.addBlockWidget(update_status_widget)
+
+        none_label = self.tr('None')
+        self.huggingface_mirror_combobox, _ = generalConfigPanel.addCombobox(
+            display_options(HUGGINGFACE_MIRROR_OPTIONS, none_label=none_label),
+            self.tr('Huggingface Mirrors'),
+            fix_size=False,
+        )
+        self.huggingface_mirror_combobox.setFixedWidth(CONFIG_COMBOBOX_MIDEAN)
+        self.huggingface_mirror_combobox.currentTextChanged.connect(self.on_huggingface_mirror_changed)
+        self.pypi_mirror_combobox, _ = generalConfigPanel.addCombobox(
+            display_options(PYPI_MIRROR_OPTIONS, none_label=none_label),
+            self.tr('PyPI Mirrors'),
+            fix_size=False,
+        )
+        self.pypi_mirror_combobox.setFixedWidth(CONFIG_COMBOBOX_MIDEAN)
+        self.pypi_mirror_combobox.currentTextChanged.connect(self.on_pypi_mirror_changed)
 
         generalConfigPanel.addTextLabel(label_typesetting)
         dec_program_str = self.tr('decide by program')
@@ -513,11 +578,17 @@ class ConfigPanel(Widget):
     def on_load_model_changed(self):
         pcfg.module.load_model_on_demand = self.load_model_checker.isChecked()
 
+    def on_package_auto_install_changed(self):
+        pcfg.package_manager.auto_install_missing_packages = self.package_auto_install_checker.isChecked()
+
     def on_runcache_changed(self):
         pcfg.module.empty_runcache = self.empty_runcache_checker.isChecked()
 
     def on_keepline_clicked(self):
         pcfg.module.keep_exist_textlines = self.detect_config_panel.keep_existing_checker.isChecked()
+
+    def on_filter_mask_by_bboxes_clicked(self):
+        pcfg.module.filter_mask_by_bboxes = self.inpaint_config_panel.filter_mask_by_bboxes_checker.isChecked()
 
     def addConfigBlock(self, header: str) -> Tuple[ConfigBlock, TableItem]:
         cb = ConfigBlock(header, parent=self)
@@ -536,6 +607,21 @@ class ConfigPanel(Widget):
 
     def on_open_onstartup_changed(self):
         pcfg.open_recent_on_startup = self.open_on_startup_checker.isChecked()
+
+    def on_check_update_onstartup_changed(self):
+        pcfg.check_update_on_startup = self.check_update_on_startup_checker.isChecked()
+
+    def on_huggingface_mirror_changed(self):
+        pcfg.mirrors.huggingface = mirror_from_display(
+            self.huggingface_mirror_combobox.currentText(),
+            none_label=self.tr('None'),
+        )
+
+    def on_pypi_mirror_changed(self):
+        pcfg.mirrors.pypi = mirror_from_display(
+            self.pypi_mirror_combobox.currentText(),
+            none_label=self.tr('None'),
+        )
 
     def on_fntsize_flag_changed(self):
         pcfg.let_fntsize_flag = self.let_fntsize_combox.currentIndex()
@@ -625,8 +711,10 @@ class ConfigPanel(Widget):
 
         if pcfg.open_recent_on_startup:
             self.open_on_startup_checker.setChecked(True)
+        self.check_update_on_startup_checker.setChecked(pcfg.check_update_on_startup)
 
         self.detect_config_panel.keep_existing_checker.setChecked(pcfg.module.keep_exist_textlines)
+        self.inpaint_config_panel.filter_mask_by_bboxes_checker.setChecked(pcfg.module.filter_mask_by_bboxes)
         self.let_effect_combox.setCurrentIndex(pcfg.let_fnteffect_flag)
         self.let_fntsize_combox.setCurrentIndex(pcfg.let_fntsize_flag)
         self.let_fntstroke_combox.setCurrentIndex(pcfg.let_fntstroke_flag)
@@ -646,7 +734,15 @@ class ConfigPanel(Widget):
         self.intermediate_imgformat_combobox.setCurrentText(pcfg.intermediate_imgsave_ext.replace('.', '').upper())
         self.rst_imgquality_edit.setText(str(pcfg.imgsave_quality))
         self.load_model_checker.setChecked(pcfg.module.load_model_on_demand)
+        self.package_auto_install_checker.setChecked(pcfg.package_manager.auto_install_missing_packages)
         self.empty_runcache_checker.setChecked(pcfg.module.empty_runcache)
         self.let_show_only_custom_fonts.setChecked(pcfg.let_show_only_custom_fonts_flag)
+        none_label = self.tr('None')
+        self.huggingface_mirror_combobox.setCurrentText(
+            mirror_to_display(pcfg.mirrors.huggingface, none_label=none_label)
+        )
+        self.pypi_mirror_combobox.setCurrentText(
+            mirror_to_display(pcfg.mirrors.pypi, none_label=none_label)
+        )
 
         self.blockSignals(False)

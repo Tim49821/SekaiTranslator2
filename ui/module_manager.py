@@ -1,14 +1,19 @@
+import threading
 import time
 from typing import Union, List, Dict, Callable
 import os.path as osp
 
 import numpy as np
+from packaging.requirements import Requirement
 from qtpy.QtCore import QThread, Signal, QObject, QLocale, QTimer
-from qtpy.QtWidgets import QFileDialog
+from qtpy.QtWidgets import QFileDialog, QMessageBox, QCheckBox
 
 from .funcmaps import get_maskseg_method
+from .packageinstall_thread import PackageInstallThread
+from .package_manager import create_package_manager
+from .torch_install_dialog import confirm_torch_install_device
 from utils.logger import logger as LOGGER
-from utils.registry import Registry
+from utils.registry import LazyModuleError, Registry
 from utils.imgproc_utils import enlarge_window, get_block_mask, restore_masked_pixels
 from utils.io_utils import imread, text_is_empty
 from modules.translators import MissingTranslatorParams
@@ -21,11 +26,14 @@ modules.translators.SYSTEM_LANG = QLocale.system().name()
 from utils.textblock import TextBlock, sort_regions
 from utils import shared
 from utils.message import create_error_dialog, create_info_dialog
-from .custom_widget import ImgtransProgressMessageBox, ParamComboBox
+from utils.download_util import DownloadCancelled, sizeof_fmt
+from modules.prepare_local_files import MissingDependency, ensure_module_files
+from utils.py_package_manager import MissingModuleRequirements, collect_missing_module_requirements
+from .custom_widget import ImgtransProgressMessageBox, ParamComboBox, ProgressMessageBox
 from .configpanel import ConfigPanel
 from .threading_utils import any_thread_running, stop_qthread
 from utils.proj_imgtrans import ProjImgTrans
-from utils.config import pcfg, RunStatus
+from utils.config import pcfg, RunStatus, save_config
 cfg_module = pcfg.module
 
 
@@ -50,6 +58,7 @@ def _should_ignore_empty_textblock_masks(blk_list: List[TextBlock]) -> bool:
 class ModuleThread(QThread):
 
     finish_set_module = Signal()
+    module_prepare_progress = Signal(dict)
     _failed_set_module_msg = 'Failed to set module.'
     module_thread_stopped = Signal()
 
@@ -65,32 +74,167 @@ class ModuleThread(QThread):
         self.num_process_pages = 0
         self.imgtrans_proj: ProjImgTrans = None
         self.stop_requested = False
+        self.cancel_event = threading.Event()
+        self.last_set_success = False
+        self.last_set_module_name = ''
+        self.last_error = None
+        self.last_missing_requirements = []
+
+    def _emit_prepare_progress(self, payload: dict):
+        payload = dict(payload)
+        payload.setdefault('module_key', self.module_key)
+        payload.setdefault('module', self.last_set_module_name)
+        self.module_prepare_progress.emit(payload)
+
+    def _prepare_module_class(self, module_name: str):
+        spec = self.module_register.get_spec(module_name)
+        if spec is None:
+            raise KeyError(f'Unknown {self.module_key} module: {module_name}')
+        self._emit_prepare_progress({'event': 'checking_dependencies', 'message': self.tr('Checking dependencies')})
+        if not ensure_module_files(spec, progress_callback=self._emit_prepare_progress, cancel_event=self.cancel_event):
+            raise RuntimeError(f'Failed to prepare files for {self.module_key} module: {module_name}')
+        if self.cancel_event.is_set():
+            raise DownloadCancelled('Module preparation cancelled by user.')
+        self._emit_prepare_progress({'event': 'importing', 'message': self.tr('Importing module')})
+        module_class = self.module_register.resolve_module(module_name)
+        if module_class is None:
+            raise KeyError(f'Failed to resolve {self.module_key} module: {module_name}')
+        return module_class
+
+    def _discard_module_instance(self, module):
+        if module is None:
+            return
+        try:
+            module.unload_model(empty_cache=True)
+        except Exception as e:
+            LOGGER.warning(f'Failed to unload {self.module_key} module after failed preparation: {e}')
 
     def _set_module(self, module_name: str, load_model: bool = None):
         old_module = self.module
+        new_module = None
+        self.last_set_module_name = module_name
+        self.last_set_success = False
+        self.last_error = None
+        self.last_missing_requirements = []
+        self.cancel_event.clear()
         try:
-            module: Union[TextDetectorBase, BaseTranslator, InpainterBase, OCRBase] \
-                = self.module_register.module_dict[module_name]
+            if old_module is not None and getattr(old_module, 'name', None) == module_name:
+                self.last_set_success = True
+                self.finish_set_module.emit()
+                return
+            module: Union[TextDetectorBase, BaseTranslator, InpainterBase, OCRBase] = self._prepare_module_class(module_name)
             params = cfg_module.get_params(self.module_key)[module_name]
+            self._emit_prepare_progress({'event': 'instantiating', 'message': self.tr('Creating module')})
             if params is not None:
-                self.module = module(**params)
+                new_module = module(**params)
             else:
-                self.module = module()
+                new_module = module()
             if load_model is None:
                 load_model = not pcfg.module.load_model_on_demand
             if load_model:
-                self.module.load_model()
+                self._emit_prepare_progress({'event': 'loading_model', 'message': self.tr('Loading model')})
+                new_module.load_model()
             if old_module is not None:
                 try:
                     old_module.unload_model(empty_cache=True)
                 except Exception as exc:
                     LOGGER.warning('Failed to unload previous %s model: %s', self.module_key, exc)
                 del old_module
+            self.module = new_module
+            setattr(cfg_module, self.module_key, module_name)
+            new_module = None
+            self.last_set_success = True
+        except DownloadCancelled as e:
+            self.module = old_module
+            self._discard_module_instance(new_module)
+            self.last_error = e
+            LOGGER.info(f'Cancelled preparing {self.module_key} module {module_name}.')
+        except MissingDependency as e:
+            self.module = old_module
+            self._discard_module_instance(new_module)
+            self.last_error = e
+            self.last_missing_requirements = e.requirements
         except Exception as e:
             self.module = old_module
-            create_error_dialog(e, self._failed_set_module_msg)
+            self._discard_module_instance(new_module)
+            missing = self._missing_requirements_from_exception(module_name, e)
+            self.last_error = e
+            self.last_missing_requirements = missing
 
         self.finish_set_module.emit()
+
+    def _missing_requirements_from_exception(self, module_name: str, exception: Exception) -> List[str]:
+        spec = self.module_register.get_spec(module_name)
+        dependencies = spec.dependencies if spec is not None and spec.dependencies else []
+        if not dependencies:
+            return []
+
+        import_name = None
+        probe = exception
+        while probe is not None:
+            if isinstance(probe, ModuleNotFoundError):
+                import_name = probe.name or import_name
+                if import_name:
+                    break
+            if isinstance(probe, LazyModuleError) and isinstance(probe.__cause__, ModuleNotFoundError):
+                import_name = probe.__cause__.name or import_name
+                if import_name:
+                    break
+            probe = probe.__cause__ or probe.__context__
+
+        if not import_name:
+            return []
+        requirement = create_package_manager().requirement_for_import_name(import_name, dependencies)
+        return [requirement] if requirement is not None else []
+
+    def installMissingPackagesAndSetModule(
+        self,
+        module_name: str,
+        requirements: List[str],
+        torch_device: str = None,
+        torch_cuda_version: str = None,
+    ):
+        self.job = lambda: self._install_missing_then_set(
+            module_name,
+            requirements,
+            torch_device=torch_device,
+            torch_cuda_version=torch_cuda_version,
+        )
+        self.start()
+
+    def _install_missing_then_set(
+        self,
+        module_name: str,
+        requirements: List[str],
+        torch_device: str = None,
+        torch_cuda_version: str = None,
+    ):
+        self.last_set_module_name = module_name
+        self.last_set_success = False
+        self.last_error = None
+        self.last_missing_requirements = []
+        self.cancel_event.clear()
+        self._emit_prepare_progress({'event': 'installing_packages', 'message': self.tr('Installing packages')})
+        result = create_package_manager().install(
+            requirements,
+            progress_callback=self._emit_prepare_progress,
+            torch_device=torch_device,
+            torch_cuda_version=torch_cuda_version,
+        )
+        if not result.ok:
+            self.last_error = RuntimeError(
+                f'Failed to install package(s): {", ".join(requirements)}\n'
+                f'Command: {result.command_text}\n'
+                f'Exit code: {result.returncode}\n'
+                f'{result.stderr or result.stdout or result.error}'
+            )
+            self.finish_set_module.emit()
+            return
+        self._set_module(module_name)
+
+    def requestCancelModuleInit(self):
+        self.cancel_event.set()
+        self.requestStop()
 
     def pipeline_finished(self):
         if self.imgtrans_proj is None:
@@ -207,29 +351,66 @@ class TranslateThread(ModuleThread):
     def _set_translator(self, translator: str):
         
         old_translator = self.translator
+        new_translator = None
+        self.last_set_module_name = translator
+        self.last_set_success = False
+        self.last_error = None
+        self.last_missing_requirements = []
+        self.cancel_event.clear()
         source, target = cfg_module.translate_source, cfg_module.translate_target
         if self.translator is not None:
             if self.translator.name == translator:
+                self.last_set_success = True
+                self.finish_set_module.emit()
                 return
         
         try:
-            params = cfg_module.translator_params[translator]
-            translator_module: BaseTranslator = TRANSLATORS.module_dict[translator]
+            params = cfg_module.translator_params.get(translator)
+            translator_module: BaseTranslator = self._prepare_module_class(translator)
+            self._emit_prepare_progress({'event': 'instantiating', 'message': self.tr('Creating module')})
             if params is not None:
-                self.translator = translator_module(source, target, raise_unsupported_lang=False, **params)
+                new_translator = translator_module(source, target, raise_unsupported_lang=False, **params)
             else:
-                self.translator = translator_module(source, target, raise_unsupported_lang=False)
-            cfg_module.translate_source = self.translator.lang_source
-            cfg_module.translate_target = self.translator.lang_target
-            cfg_module.translator = self.translator.name
-        except Exception as e:
-            if old_translator is None:
-                old_translator = TRANSLATORS.module_dict['google']('简体中文', 'English', raise_unsupported_lang=False)
+                new_translator = translator_module(source, target, raise_unsupported_lang=False)
+            self._emit_prepare_progress({'event': 'loading_model', 'message': self.tr('Loading model')})
+            new_translator.load_model()
+            cfg_module.translate_source = new_translator.lang_source
+            cfg_module.translate_target = new_translator.lang_target
+            cfg_module.translator = new_translator.name
+            if old_translator is not None:
+                old_translator.unload_model(empty_cache=True)
+            self.translator = new_translator
+            self.module = self.translator
+            new_translator = None
+            self.last_set_success = True
+        except DownloadCancelled as e:
             self.translator = old_translator
-            msg = self.tr('Failed to set translator ') + translator
-            create_error_dialog(e, msg, 'FailedSetTranslator')
+            self.module = self.translator
+            self._discard_module_instance(new_translator)
+            self.last_error = e
+            LOGGER.info(f'Cancelled preparing translator {translator}.')
+        except MissingDependency as e:
+            self.translator = old_translator
+            self.module = self.translator
+            self._discard_module_instance(new_translator)
+            self.last_error = e
+            self.last_missing_requirements = e.requirements
+        except Exception as e:
+            self.translator = old_translator
+            self.module = self.translator
+            self._discard_module_instance(new_translator)
+            missing = self._missing_requirements_from_exception(translator, e)
+            self.last_error = e
+            self.last_missing_requirements = missing
+            if not missing and old_translator is None:
+                google_module = TRANSLATORS.resolve_module('google')
+                old_translator = google_module('简体中文', 'English', raise_unsupported_lang=False)
+                self.translator = old_translator
+                self.module = self.translator
+            if not missing:
+                msg = self.tr('Failed to set translator ') + translator
+                create_error_dialog(e, msg, 'FailedSetTranslator')
 
-        self.module = self.translator
         self.finish_set_module.emit()
 
     def setTranslator(self, translator: str):
@@ -720,8 +901,22 @@ class ModuleManager(QObject):
         self.imgtrans_proj = imgtrans_proj
         self.check_inpaint_fin_timer = QTimer(self)
         self.check_inpaint_fin_timer.timeout.connect(self.check_inpaint_th_finished)
+        self.prepare_msgbox: ProgressMessageBox = None
+        self._preparing_thread: ModuleThread = None
+        self._pending_prepare_queue = []
+        self._pending_prepare_success = None
+        self._pending_prepare_failure = None
+        self._pending_batch_package_queue = []
+        self._pending_batch_package_success = None
+        self._pending_batch_package_failure = None
+        self._package_install_retried = set()
+        self.package_install_thread: PackageInstallThread = None
+        self.config_panel: ConfigPanel = None
+        self.parent_widget = None
 
     def setupThread(self, config_panel: ConfigPanel, imgtrans_progress_msgbox: ImgtransProgressMessageBox, ocr_postprocess: Callable = None, translate_preprocess: Callable = None, translate_postprocess: Callable = None):
+        self.config_panel = config_panel
+        self.parent_widget = config_panel.window() if config_panel is not None else None
         self.textdetect_thread = TextDetectThread()
 
         self.ocr_thread = OCRThread()
@@ -732,6 +927,18 @@ class ModuleManager(QObject):
 
         self.inpaint_thread = InpaintThread()
         self.inpaint_thread.finish_inpaint.connect(self.on_finish_inpaint)
+
+        self.prepare_msgbox = ProgressMessageBox(self.tr('Preparing module: '), True, self.parent_widget)
+        self.prepare_msgbox.setStyleSheet(imgtrans_progress_msgbox.styleSheet())
+        self.prepare_msgbox.stop_clicked.connect(self.cancelModulePreparation)
+
+        for module_thread in [self.textdetect_thread, self.ocr_thread, self.translate_thread, self.inpaint_thread]:
+            module_thread.module_prepare_progress.connect(self.on_module_prepare_progress)
+            module_thread.finish_set_module.connect(lambda th=module_thread: self.on_module_prepare_finished(th))
+
+        self.package_install_thread = PackageInstallThread()
+        self.package_install_thread.package_prepare_progress.connect(self.on_module_prepare_progress)
+        self.package_install_thread.finish_install.connect(self.on_batch_package_install_finished)
 
         self.progress_msgbox = imgtrans_progress_msgbox
         self.progress_msgbox.stop_clicked.connect(self.stopImgtransPipeline)
@@ -781,6 +988,472 @@ class ModuleManager(QObject):
         OCRBase.register_postprocess_hooks(ocr_postprocess)
 
         config_panel.unload_models.connect(self.unload_all_models)
+        if hasattr(config_panel, 'prepare_selected_modules'):
+            config_panel.prepare_selected_modules.connect(self.prepareSelectedModules)
+
+
+    def _thread_for_module_key(self, module_key: str) -> ModuleThread:
+        return {
+            'textdetector': self.textdetect_thread,
+            'ocr': self.ocr_thread,
+            'translator': self.translate_thread,
+            'inpainter': self.inpaint_thread,
+        }[module_key]
+
+    def _registry_for_module_key(self, module_key: str) -> Registry:
+        return {
+            'textdetector': TEXTDETECTORS,
+            'ocr': OCR,
+            'translator': TRANSLATORS,
+            'inpainter': INPAINTERS,
+        }[module_key]
+
+    def _setter_for_module_key(self, module_key: str):
+        return {
+            'textdetector': self.textdetect_thread.setTextDetector,
+            'ocr': self.ocr_thread.setOCR,
+            'translator': self.translate_thread.setTranslator,
+            'inpainter': self.inpaint_thread.setInpainter,
+        }[module_key]
+
+    def _module_ready(self, module_key: str, module_name: str) -> bool:
+        thread = self._thread_for_module_key(module_key)
+        module = thread.module
+        if module is None or getattr(module, 'name', None) != module_name:
+            return False
+        return module.all_model_loaded() or pcfg.module.load_model_on_demand
+
+    def _prepare_modules_then(self, required_modules: List[tuple], on_success: Callable, on_failure: Callable = None):
+        queue = [
+            (module_key, module_name)
+            for module_key, module_name in required_modules
+            if module_name and not self._module_ready(module_key, module_name)
+        ]
+        if not queue:
+            on_success()
+            return
+        missing_modules = self._missing_module_requirements_for_modules(queue)
+        if missing_modules:
+            self._handle_batch_missing_packages(queue, missing_modules, on_success, on_failure)
+            return
+        self._begin_prepare_queue(queue, on_success, on_failure)
+
+    def _begin_prepare_queue(self, queue: List[tuple], on_success: Callable, on_failure: Callable = None):
+        self._package_install_retried.clear()
+        self._pending_prepare_queue = list(queue)
+        self._pending_prepare_success = on_success
+        self._pending_prepare_failure = on_failure
+        self._continue_pending_prepare()
+
+    def _missing_module_requirements_for_modules(self, required_modules: List[tuple]) -> List[MissingModuleRequirements]:
+        module_specs = []
+        for module_key, module_name in required_modules:
+            spec = self._registry_for_module_key(module_key).get_spec(module_name)
+            if spec is not None:
+                module_specs.append((module_key, module_name, spec))
+        return collect_missing_module_requirements(module_specs, create_package_manager())
+
+    def _continue_pending_prepare(self):
+        while self._pending_prepare_queue:
+            module_key, module_name = self._pending_prepare_queue.pop(0)
+            if self._module_ready(module_key, module_name):
+                continue
+            thread = self._thread_for_module_key(module_key)
+            self._show_prepare_dialog(thread, module_name)
+            self._setter_for_module_key(module_key)(module_name)
+            return
+
+        on_success = self._pending_prepare_success
+        self._pending_prepare_success = None
+        self._pending_prepare_failure = None
+        self._package_install_retried.clear()
+        if on_success is not None:
+            on_success()
+
+    @staticmethod
+    def _combined_missing_requirements(missing_modules: List[MissingModuleRequirements]) -> List[str]:
+        requirements = []
+        for missing_module in missing_modules:
+            requirements.extend(missing_module.requirements)
+        return list(dict.fromkeys(requirements))
+
+    @staticmethod
+    def _missing_modules_text(missing_modules: List[MissingModuleRequirements]) -> str:
+        return '\n'.join(
+            f'- {item.module_key}/{item.module_name}: {", ".join(item.requirements)}'
+            for item in missing_modules
+        )
+
+    def _install_and_auto_install_checked(self, msgbox: QMessageBox, install_btn, auto_install_checker: QCheckBox) -> bool:
+        should_install = msgbox.clickedButton() is install_btn
+        if should_install and auto_install_checker.isChecked():
+            pcfg.package_manager.auto_install_missing_packages = True
+            if self.config_panel is not None and hasattr(self.config_panel, 'package_auto_install_checker'):
+                self.config_panel.package_auto_install_checker.setChecked(True)
+            save_config()
+        return should_install
+
+    def _handle_batch_missing_packages(
+        self,
+        queue: List[tuple],
+        missing_modules: List[MissingModuleRequirements],
+        on_success: Callable,
+        on_failure: Callable = None,
+    ):
+        requirements = self._combined_missing_requirements(missing_modules)
+        if pcfg.package_manager.auto_install_missing_packages:
+            self._install_batch_missing_packages(queue, requirements, on_success, on_failure)
+            return
+
+        if shared.HEADLESS:
+            LOGGER.error(f'Selected modules require package(s):\n{self._missing_modules_text(missing_modules)}')
+            if on_failure is not None:
+                on_failure()
+            return
+
+        if self._ask_install_missing_package_batch(missing_modules, requirements):
+            self._install_batch_missing_packages(queue, requirements, on_success, on_failure)
+            return
+        if on_failure is not None:
+            on_failure()
+
+    def _ask_install_missing_package_batch(self, missing_modules: List[MissingModuleRequirements], requirements: List[str]) -> bool:
+        command_preview = create_package_manager().preview_command(requirements)
+        msgbox = QMessageBox()
+        msgbox.setIcon(QMessageBox.Question)
+        msgbox.setWindowTitle(self.tr('Missing packages'))
+        msgbox.setText(
+            self.tr('Selected modules require missing package(s):\n{modules}').format(
+                modules=self._missing_modules_text(missing_modules),
+            )
+        )
+        msgbox.setInformativeText(self.tr('Install the missing package(s) now?'))
+        msgbox.setDetailedText(command_preview)
+        install_btn = msgbox.addButton(self.tr('Install'), QMessageBox.AcceptRole)
+        msgbox.addButton(self.tr('Not Now'), QMessageBox.RejectRole)
+        auto_install_checker = QCheckBox(self.tr("Install all missing packages and don't show again"))
+        msgbox.setCheckBox(auto_install_checker)
+        msgbox.exec()
+        return self._install_and_auto_install_checked(msgbox, install_btn, auto_install_checker)
+
+    def _install_batch_missing_packages(
+        self,
+        queue: List[tuple],
+        requirements: List[str],
+        on_success: Callable,
+        on_failure: Callable = None,
+    ):
+        if self.package_install_thread is None:
+            raise RuntimeError('Package install thread is not initialized.')
+        if self.package_install_thread.isRunning():
+            LOGGER.warning('Package installation is already running.')
+            if on_failure is not None:
+                on_failure()
+            return
+        accepted, torch_device, torch_cuda_version = self._confirm_torch_install_device(requirements)
+        if not accepted:
+            if on_failure is not None:
+                on_failure()
+            return
+        self._pending_batch_package_queue = list(queue)
+        self._pending_batch_package_success = on_success
+        self._pending_batch_package_failure = on_failure
+        self._show_package_install_dialog(requirements)
+        self.package_install_thread.installPackages(
+            requirements,
+            torch_device=torch_device,
+            torch_cuda_version=torch_cuda_version,
+        )
+
+    def _confirm_torch_install_device(self, requirements: List[str]):
+        if shared.HEADLESS:
+            return True, None, None
+        return confirm_torch_install_device(requirements, parent=self.parent_widget)
+
+    def _show_package_install_dialog(self, requirements: List[str]):
+        if shared.HEADLESS:
+            LOGGER.info(f'Installing package(s): {", ".join(requirements)}')
+            return
+        self.prepare_msgbox.zero_progress()
+        self.prepare_msgbox.setTaskName(self.tr('Installing packages: '))
+        self.prepare_msgbox.updateTaskProgress(0, self._installing_packages_summary(requirements))
+        if self.prepare_msgbox.stop_button is not None:
+            self.prepare_msgbox.stop_button.setEnabled(False)
+            self.prepare_msgbox.stop_button.setText(self.tr('Installing...'))
+        self.prepare_msgbox.setFixedWidth(self.progress_msgbox.sizeHint().width())
+        self.prepare_msgbox.show_fitted()
+
+    def on_batch_package_install_finished(self):
+        if not shared.HEADLESS:
+            self.prepare_msgbox.done(0)
+
+        queue = self._pending_batch_package_queue
+        on_success = self._pending_batch_package_success
+        on_failure = self._pending_batch_package_failure
+        self._pending_batch_package_queue = []
+        self._pending_batch_package_success = None
+        self._pending_batch_package_failure = None
+
+        if self.package_install_thread.last_success:
+            if shared.HEADLESS:
+                self._begin_prepare_queue(queue, on_success, on_failure)
+            else:
+                QTimer.singleShot(0, lambda: self._begin_prepare_queue(queue, on_success, on_failure))
+            return
+
+        if self.package_install_thread.last_error is not None:
+            create_error_dialog(
+                self.package_install_thread.last_error,
+                self.tr('Failed to install packages'),
+                'InstallPackages:batch',
+            )
+        if on_failure is not None:
+            on_failure()
+
+    def _show_prepare_dialog(self, thread: ModuleThread, module_name: str):
+        self._preparing_thread = thread
+        if shared.HEADLESS:
+            LOGGER.info(f'Preparing {thread.module_key} module: {module_name}')
+            return
+        self.prepare_msgbox.zero_progress()
+        self.prepare_msgbox.setTaskName(self.tr('Preparing module: '))
+        self.prepare_msgbox.updateTaskProgress(0, module_name)
+        self.prepare_msgbox.setFixedWidth(self.progress_msgbox.sizeHint().width())
+        if self.prepare_msgbox.stop_button is not None:
+            self.prepare_msgbox.stop_button.setEnabled(True)
+            self.prepare_msgbox.stop_button.setText(self.tr('Stop'))
+        self.prepare_msgbox.show_fitted()
+
+    def cancelModulePreparation(self):
+        if self._preparing_thread is not None:
+            self._preparing_thread.requestCancelModuleInit()
+
+    @staticmethod
+    def _installing_packages_summary(requirements: List[str]) -> str:
+        reqs = list(dict.fromkeys(requirements))
+        if not reqs:
+            return 'packages'
+        try:
+            first = Requirement(reqs[0]).name
+        except Exception:
+            first = str(reqs[0])
+        return first + ('...' if len(reqs) > 1 else '')
+
+    def _package_download_progress_message(self, payload: dict):
+        message = payload.get('message') or self.tr('Downloading package')
+        downloaded = payload.get('downloaded') or 0
+        total = payload.get('total')
+        status = []
+        if total:
+            status.append(f'{downloaded / total * 100:.1f}%')
+        else:
+            status.append(sizeof_fmt(downloaded))
+        speed = payload.get('speed')
+        if speed:
+            status.append(f'{sizeof_fmt(speed)}/s')
+        eta = payload.get('eta')
+        if eta is not None:
+            status.append(f'ETA {self._format_duration(eta)}')
+        return message, ' | '.join(status)
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        seconds = max(int(seconds), 0)
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f'{hours}:{minutes:02d}:{seconds:02d}'
+
+    def on_module_prepare_progress(self, payload: dict):
+        event = payload.get('event', '')
+        module_name = payload.get('module', '')
+        path = payload.get('path', '')
+        message = payload.get('message', '')
+        verbose_message = ''
+        progress_by_event = {
+            'checking_dependencies': 5,
+            'module_file_group': 10,
+            'file_check': 15,
+            'file_start': 20,
+            'archive_extract': 75,
+            'archive_move': 85,
+            'installing_packages': 25,
+            'package_output': 25,
+            'package_download_progress': 30,
+            'importing': 88,
+            'instantiating': 92,
+            'loading_model': 96,
+        }
+        progress = progress_by_event.get(event, 5)
+        if event == 'file_progress':
+            downloaded = payload.get('downloaded') or 0
+            total = payload.get('total')
+            if total:
+                progress = max(20, min(74, int(downloaded / total * 54) + 20))
+            else:
+                progress = 35
+        elif event == 'package_download_progress':
+            message, verbose_message = self._package_download_progress_message(payload)
+            total = payload.get('total')
+            downloaded = payload.get('downloaded') or 0
+            if total:
+                progress = max(0, min(100, int(downloaded / total * 100)))
+        elif event in {'installing_packages', 'package_output'}:
+            verbose_message = ''
+        if not message:
+            message = path or module_name
+
+        if shared.HEADLESS:
+            if event in {'checking_dependencies', 'file_start', 'archive_extract', 'installing_packages', 'package_output', 'importing', 'loading_model'}:
+                LOGGER.info(f'{message}: {event}')
+            return
+        if self.prepare_msgbox is not None:
+            self.prepare_msgbox.updateTaskProgress(progress, message, verbose_message)
+
+    def on_module_prepare_finished(self, thread: ModuleThread):
+        if self._preparing_thread is thread:
+            if not shared.HEADLESS:
+                self.prepare_msgbox.done(0)
+            self._preparing_thread = None
+
+        if not thread.last_set_success and thread.last_missing_requirements:
+            if self._handle_missing_packages(thread):
+                return
+
+        if self._pending_prepare_success is None and self._pending_prepare_failure is None:
+            if not thread.last_set_success and thread.last_error is not None:
+                self._show_module_prepare_failure(thread)
+            return
+
+        if thread.last_set_success:
+            if shared.HEADLESS:
+                self._continue_pending_prepare()
+            else:
+                QTimer.singleShot(0, self._continue_pending_prepare)
+        else:
+            self._show_module_prepare_failure(thread)
+            self._finish_pending_prepare_failure()
+
+    def _finish_pending_prepare_failure(self):
+        on_failure = self._pending_prepare_failure
+        self._pending_prepare_queue = []
+        self._pending_prepare_success = None
+        self._pending_prepare_failure = None
+        self._package_install_retried.clear()
+        if on_failure is not None:
+            on_failure()
+
+    def _clear_install_retry_if_standalone_prepare(self):
+        if self._pending_prepare_success is None and self._pending_prepare_failure is None:
+            self._package_install_retried.clear()
+
+    def _handle_missing_packages(self, thread: ModuleThread) -> bool:
+        requirements = list(dict.fromkeys(thread.last_missing_requirements))
+        retry_key = (thread.module_key, thread.last_set_module_name, tuple(requirements))
+        if retry_key in self._package_install_retried:
+            self._show_module_prepare_failure(thread)
+            if self._pending_prepare_success is not None or self._pending_prepare_failure is not None:
+                self._finish_pending_prepare_failure()
+            return True
+        if pcfg.package_manager.auto_install_missing_packages:
+            self._install_missing_packages_and_retry(thread, requirements, retry_key)
+            return True
+        if shared.HEADLESS:
+            LOGGER.error(f'Module {thread.last_set_module_name} requires package(s): {", ".join(requirements)}')
+            return False
+        should_install = self._ask_install_missing_packages(thread, requirements)
+        if should_install:
+            self._install_missing_packages_and_retry(thread, requirements, retry_key)
+            return True
+        return False
+
+    def _ask_install_missing_packages(self, thread: ModuleThread, requirements: List[str]) -> bool:
+        command_preview = create_package_manager().preview_command(requirements)
+        msgbox = QMessageBox()
+        msgbox.setIcon(QMessageBox.Question)
+        msgbox.setWindowTitle(self.tr('Missing packages'))
+        msgbox.setText(
+            self.tr('Module "{module}" requires missing package(s):\n{packages}').format(
+                module=thread.last_set_module_name,
+                packages=', '.join(requirements),
+            )
+        )
+        msgbox.setInformativeText(self.tr('Install the missing package(s) now?'))
+        msgbox.setDetailedText(command_preview)
+        install_btn = msgbox.addButton(self.tr('Install'), QMessageBox.AcceptRole)
+        msgbox.addButton(self.tr('Not Now'), QMessageBox.RejectRole)
+        auto_install_checker = QCheckBox(self.tr("Install all missing packages and don't show again"))
+        msgbox.setCheckBox(auto_install_checker)
+        msgbox.exec()
+        return self._install_and_auto_install_checked(msgbox, install_btn, auto_install_checker)
+
+    def _install_missing_packages_and_retry(self, thread: ModuleThread, requirements: List[str], retry_key: tuple):
+        accepted, torch_device, torch_cuda_version = self._confirm_torch_install_device(requirements)
+        if not accepted:
+            return
+        self._package_install_retried.add(retry_key)
+        self._show_prepare_dialog(thread, thread.last_set_module_name)
+        thread.installMissingPackagesAndSetModule(
+            thread.last_set_module_name,
+            requirements,
+            torch_device=torch_device,
+            torch_cuda_version=torch_cuda_version,
+        )
+
+    def _show_module_prepare_failure(self, thread: ModuleThread):
+        if thread.last_error is None:
+            return
+        msg = self.tr('Failed to set module ') + thread.last_set_module_name
+        create_error_dialog(thread.last_error, msg, f'FailedSetModule:{thread.module_key}')
+
+    def _module_preparation_running(self) -> bool:
+        module_threads = [self.textdetect_thread, self.ocr_thread, self.translate_thread, self.inpaint_thread]
+        package_running = self.package_install_thread is not None and self.package_install_thread.isRunning()
+        return package_running or any(thread.isRunning() for thread in module_threads)
+
+    def _selected_module_name(self, module_key: str) -> str:
+        panel = {
+            'textdetector': self.textdetect_panel,
+            'ocr': self.ocr_panel,
+            'translator': self.translator_panel,
+            'inpainter': self.inpaint_panel,
+        }[module_key]
+        return panel.module_combobox.currentText()
+
+    def _selected_modules(self) -> List[tuple]:
+        return [
+            ('textdetector', self._selected_module_name('textdetector')),
+            ('ocr', self._selected_module_name('ocr')),
+            ('translator', self._selected_module_name('translator')),
+            ('inpainter', self._selected_module_name('inpainter')),
+        ]
+
+    def prepareSelectedModules(self):
+        if self.imgtrans_thread.isRunning() or self._module_preparation_running():
+            create_info_dialog(self.tr('Module preparation is already running.'))
+            return
+        self._prepare_modules_then(
+            self._selected_modules(),
+            lambda: create_info_dialog(self.tr('Selected modules are ready.')),
+        )
+
+    def setConfiguredModulesOnStartup(self):
+        configured_modules = [
+            ('textdetector', cfg_module.textdetector),
+            ('ocr', cfg_module.ocr),
+            ('translator', cfg_module.translator),
+            ('inpainter', cfg_module.inpainter),
+        ]
+        for module_key, module_name in configured_modules:
+            registry = self._registry_for_module_key(module_key)
+            spec = registry.get_spec(module_name)
+            if spec is not None and (spec.dependencies or spec.download_file_list):
+                LOGGER.info(
+                    'Deferring startup preparation for %s/%s until it is used.',
+                    module_key,
+                    module_name,
+                )
+                continue
+            self._setter_for_module_key(module_key)(module_name)
 
 
     def unload_all_models(self):
@@ -830,7 +1503,10 @@ class ModuleManager(QObject):
                 LOGGER.warning('Requesting the running translation thread to stop.')
                 self.translate_thread.stopThread()
             return
-        self.translate_thread.translatePage(self.imgtrans_proj.pages, page_key)
+        self._prepare_modules_then(
+            [('translator', cfg_module.translator)],
+            lambda: self.translate_thread.translatePage(self.imgtrans_proj.pages, page_key),
+        )
 
     def inpainterBusy(self):
         return self.inpaint_thread.isRunning()
@@ -882,8 +1558,26 @@ class ModuleManager(QObject):
             self.imgtrans_pipeline_finished.emit()
             return
 
+        required_modules = []
+        if cfg_module.enable_detect:
+            required_modules.append(('textdetector', cfg_module.textdetector))
+        if cfg_module.enable_ocr:
+            required_modules.append(('ocr', cfg_module.ocr))
+        if cfg_module.enable_translate:
+            required_modules.append(('translator', cfg_module.translator))
+        if cfg_module.enable_inpaint:
+            required_modules.append(('inpainter', cfg_module.inpainter))
+        self._prepare_modules_then(
+            required_modules,
+            lambda: self._startImgtransPipeline(pages_to_process),
+            on_failure=lambda: self.imgtrans_pipeline_finished.emit() if shared.HEADLESS else None,
+        )
+
+    def _startImgtransPipeline(self, pages_to_process=None):
+        if self.prepare_msgbox is not None and self.prepare_msgbox.isVisible():
+            self.prepare_msgbox.done(0)
         self.unload_external_detector_if_internal_ocr()
-        
+
         self.progress_msgbox.detect_bar.setVisible(self.imgtrans_thread.external_detector_enabled())
         self.progress_msgbox.ocr_bar.setVisible(cfg_module.enable_ocr)
         self.progress_msgbox.translate_bar.setVisible(cfg_module.enable_translate)
@@ -902,6 +1596,21 @@ class ModuleManager(QObject):
             LOGGER.warning('Previous pipeline is still stopping; skip starting a block pipeline.')
             self.progress_msgbox.hide()
             return
+        required_modules = []
+        if mode >= 0 and mode < 3:
+            required_modules.append(('ocr', cfg_module.ocr))
+        if mode != 0 and mode < 3:
+            required_modules.append(('translator', cfg_module.translator))
+        if mode >= 2:
+            required_modules.append(('inpainter', cfg_module.inpainter))
+        self._prepare_modules_then(
+            required_modules,
+            lambda: self._startBlktransPipeline(blk_list, tgt_img, mode, blk_ids, tgt_mask),
+        )
+
+    def _startBlktransPipeline(self, blk_list: List[TextBlock], tgt_img: np.ndarray, mode: int, blk_ids: List[int], tgt_mask):
+        if self.prepare_msgbox is not None and self.prepare_msgbox.isVisible():
+            self.prepare_msgbox.done(0)
         self.progress_msgbox.hide_all_bars()
         if mode >= 0 and mode < 3:
             self.progress_msgbox.ocr_bar.show()
@@ -1011,9 +1720,11 @@ class ModuleManager(QObject):
         if translator is None:
             translator = cfg_module.translator
         if self.translate_thread.isRunning():
-            LOGGER.warning('Requesting the running translation thread to stop before changing translator.')
-            if not self.translate_thread.stopThread():
-                return
+            LOGGER.warning('Cancelling a running translation/module preparation thread.')
+            self.translate_thread.requestCancelModuleInit()
+            return
+        self._clear_install_retry_if_standalone_prepare()
+        self._show_prepare_dialog(self.translate_thread, translator)
         self.translate_thread.setTranslator(translator)
 
     def setInpainter(self, inpainter: str = None):
@@ -1025,32 +1736,37 @@ class ModuleManager(QObject):
             inpainter =cfg_module.inpainter
         
         if self.inpaint_thread.isRunning():
-            self.block_set_inpainter = True
-            create_info_dialog(self.tr('Set Inpainter...'), modal=True, signal_slot_map_list=[{'signal': self.inpaint_th_finished, 'slot': 'done'}])
-            self.check_inpaint_fin_timer.start(300)
+            LOGGER.warning('Cancelling a running inpaint/module preparation thread.')
+            self.inpaint_thread.requestCancelModuleInit()
             return
 
+        self._clear_install_retry_if_standalone_prepare()
+        self._show_prepare_dialog(self.inpaint_thread, inpainter)
         self.inpaint_thread.setInpainter(inpainter)
 
     def setTextDetector(self, textdetector: str = None):
         if textdetector is None:
             textdetector = cfg_module.textdetector
         if self.textdetect_thread.isRunning():
-            LOGGER.warning('Requesting the running text detection thread to stop before changing detector.')
-            if not self.textdetect_thread.stopThread():
-                return
+            LOGGER.warning('Cancelling a running text detection/module preparation thread.')
+            self.textdetect_thread.requestCancelModuleInit()
+            return
         load_model = None
         if self.ocr_config_uses_internal_text_detector():
             load_model = False
+        self._clear_install_retry_if_standalone_prepare()
+        self._show_prepare_dialog(self.textdetect_thread, textdetector)
         self.textdetect_thread.setTextDetector(textdetector, load_model=load_model)
 
     def setOCR(self, ocr: str = None):
         if ocr is None:
             ocr = cfg_module.ocr
         if self.ocr_thread.isRunning():
-            LOGGER.warning('Requesting the running OCR thread to stop before changing OCR.')
-            if not self.ocr_thread.stopThread():
-                return
+            LOGGER.warning('Cancelling a running OCR/module preparation thread.')
+            self.ocr_thread.requestCancelModuleInit()
+            return
+        self._clear_install_retry_if_standalone_prepare()
+        self._show_prepare_dialog(self.ocr_thread, ocr)
         self.ocr_thread.setOCR(ocr)
 
     def on_finish_translate_page(self, page_key: str):
@@ -1062,6 +1778,12 @@ class ModuleManager(QObject):
             self.run_canvas_inpaint = False
 
     def canvas_inpaint(self, inpaint_dict):
+        self._prepare_modules_then(
+            [('inpainter', cfg_module.inpainter)],
+            lambda: self._start_canvas_inpaint(inpaint_dict),
+        )
+
+    def _start_canvas_inpaint(self, inpaint_dict):
         self.run_canvas_inpaint = True
         self.inpaint(**inpaint_dict)
     
