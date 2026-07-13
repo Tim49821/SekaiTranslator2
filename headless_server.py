@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
@@ -22,6 +23,7 @@ from utils.api_uploads import (
     upload_too_large_message,
     validate_image_file,
 )
+from utils.api_security import require_auth_for_public_bind
 
 
 _CONTENT_TYPE_EXT = {
@@ -223,6 +225,7 @@ class TranslationJobManager:
         self._jobs = {}
         self._lock = threading.Lock()
         self._queue = Queue()
+        self._closed = False
         self._worker = threading.Thread(target=self._run, name="headless-api-job-worker", daemon=True)
         self._worker.start()
 
@@ -294,6 +297,8 @@ class TranslationJobManager:
         while True:
             job_id = self._queue.get()
             try:
+                if job_id is None:
+                    return
                 job = self._set_status(job_id, "running")
                 if job is None:
                     continue
@@ -305,6 +310,13 @@ class TranslationJobManager:
                 self._finish_job(job_id, TranslationOutcome(False, 500, error=str(exc)))
             finally:
                 self._queue.task_done()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+        self._worker.join(timeout=2.0)
 
 
 def media_type_for_path(path: str) -> str:
@@ -352,8 +364,17 @@ def create_app(
     from fastapi.responses import JSONResponse, Response
 
     max_upload_bytes = max_upload_bytes or max_upload_bytes_from_env()
-    app = FastAPI(title="BalloonsTranslator Headless API")
     job_manager = TranslationJobManager(bridge, translation_lock, result_ttl_seconds)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            job_manager.close()
+
+    app = FastAPI(title="BalloonsTranslator Headless API", lifespan=lifespan)
+    app.state.job_manager = job_manager
 
     @app.middleware("http")
     async def reject_large_requests(request: Request, call_next):
@@ -469,9 +490,15 @@ def start_headless_server(
     api_token: str = "",
     result_ttl_seconds: int = 3600,
     max_upload_bytes: int = None,
+    allow_unauthenticated_public: bool = False,
 ):
     import uvicorn
 
+    require_auth_for_public_bind(
+        host,
+        {'api': api_token},
+        allow_unauthenticated_public=allow_unauthenticated_public,
+    )
     bridge = HeadlessTranslationBridge(main_window)
     translation_lock = threading.Lock()
     app = create_app(bridge, translation_lock, api_token, result_ttl_seconds, max_upload_bytes)

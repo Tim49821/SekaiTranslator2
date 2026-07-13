@@ -7,10 +7,16 @@ import numpy as np
 import cv2
 
 from utils.imgproc_utils import enlarge_window, restore_masked_pixels
-from utils.textblock_mask import canny_flood, connected_canny_flood
+from utils.textblock_mask import canny_flood, connected_canny_flood, feather_inpaint_result
 from utils.logger import logger
 from utils.config import pcfg
-from .funcmaps import get_maskseg_method
+from .funcmaps import (
+    MASKSEG_EXISTING_MASK,
+    MASKSEG_METHOD_1,
+    MASKSEG_METHOD_2,
+    MASKSEG_METHOD_3,
+    get_maskseg_method,
+)
 from .module_manager import ModuleManager
 from .image_edit import ImageEditMode, PenShape, PixmapItem, StrokeImgItem
 from .configpanel import InpaintConfigPanel
@@ -28,6 +34,22 @@ MAX_PEN_SIZE = 1000
 MIN_PEN_SIZE = 1
 TOOLNAME_POINT_SIZE = 13
 MAX_CURSOR_PIXMAP_SIZE = 256
+
+
+def _expand_context_rect(rect, im_w: int, im_h: int, area_ratio: float):
+    """Expand toward available space instead of requiring symmetric margins."""
+    x1, y1, x2, y2 = [int(value) for value in rect]
+    width, height = x2 - x1, y2 - y1
+    if width <= 0 or height <= 0:
+        return [x1, y1, x2, y2]
+
+    scale = float(np.sqrt(max(area_ratio, 1.0)))
+    target_w = min(im_w, max(width, int(np.ceil(width * scale))))
+    target_h = min(im_h, max(height, int(np.ceil(height * scale))))
+    expanded_x1 = max(0, min(x1 - (target_w - width) // 2, im_w - target_w))
+    expanded_y1 = max(0, min(y1 - (target_h - height) // 2, im_h - target_h))
+    return [expanded_x1, expanded_y1, expanded_x1 + target_w, expanded_y1 + target_h]
+
 
 class DrawToolCheckBox(QCheckBox):
     checked = Signal()
@@ -246,11 +268,14 @@ class RectPanel(Widget):
         self.methodComboBox = QComboBox()
         self.methodComboBox.setFixedHeight(CONFIG_COMBOBOX_HEIGHT)
         self.methodComboBox.setFixedWidth(CONFIG_COMBOBOX_SHORT)
-        self.methodComboBox.addItems([
-            self.tr('method 1'), 
-            self.tr('method 2'),
-            self.tr('Use Existing Mask')
-        ])
+        method_3_label = self.tr('method 3')
+        if method_3_label == 'method 3':
+            # Older compiled translations do not contain this newly added key.
+            method_3_label = self.tr('method 1').replace('1', '3')
+        self.methodComboBox.addItem(self.tr('method 1'), MASKSEG_METHOD_1)
+        self.methodComboBox.addItem(self.tr('method 2'), MASKSEG_METHOD_2)
+        self.methodComboBox.addItem(method_3_label, MASKSEG_METHOD_3)
+        self.methodComboBox.addItem(self.tr('Use Existing Mask'), MASKSEG_EXISTING_MASK)
         self.methodComboBox.activated.connect(self.on_inpaint_seg_method_changed)
         self.autoChecker = QCheckBox(self.tr("Auto"))
         self.autoChecker.setToolTip(self.tr("run inpainting automatically."))
@@ -291,7 +316,10 @@ class RectPanel(Widget):
         return super().hideEvent(e)
         
     def on_inpaint_seg_method_changed(self):
-        pcfg.drawpanel.rectool_method = self.methodComboBox.currentIndex()
+        method_id = self.methodComboBox.currentData()
+        if method_id is None:
+            method_id = MASKSEG_METHOD_1
+        pcfg.drawpanel.rectool_method = int(method_id)
 
     def on_auto_changed(self):
         if self.autoChecker.isChecked():
@@ -723,7 +751,10 @@ class DrawingPanel(Widget):
         
         self.rectPanel.dilate_slider.setValue(config.recttool_dilate_ksize)
         self.rectPanel.autoChecker.setChecked(config.rectool_auto)
-        self.rectPanel.methodComboBox.setCurrentIndex(config.rectool_method)
+        method_index = self.rectPanel.methodComboBox.findData(config.rectool_method)
+        if method_index < 0:
+            method_index = self.rectPanel.methodComboBox.findData(MASKSEG_METHOD_1)
+        self.rectPanel.methodComboBox.setCurrentIndex(method_index)
         if config.current_tool == ImageEditMode.HandTool:
             self.handTool.setChecked(True)
         elif config.current_tool == ImageEditMode.InpaintTool:
@@ -980,8 +1011,21 @@ class DrawingPanel(Widget):
         try:
             inpainted = inpaint_dict['inpainted']
             inpaint_rect = inpaint_dict['inpaint_rect']
+            mask = inpaint_dict['mask']
+            feather_radius = int(inpaint_dict.get('feather_radius', 0))
+            if feather_radius > 0:
+                inpainted, mask = feather_inpaint_result(
+                    inpaint_dict['img'],
+                    inpainted,
+                    mask,
+                    radius=feather_radius,
+                )
             mask_array = self.canvas.imgtrans_proj.mask_array
-            mask = cv2.bitwise_or(inpaint_dict['mask'], mask_array[inpaint_rect[1]: inpaint_rect[3], inpaint_rect[0]: inpaint_rect[2]])
+            existing_mask = mask_array[
+                inpaint_rect[1]:inpaint_rect[3],
+                inpaint_rect[0]:inpaint_rect[2],
+            ]
+            mask = cv2.bitwise_or(mask, existing_mask)
             self.canvas.push_undo_command(InpaintUndoCommand(self.canvas, inpainted, mask, inpaint_rect))
         finally:
             self.setPaintBusy(False)
@@ -1129,6 +1173,9 @@ class DrawingPanel(Widget):
                 inpaint_dict['need_inpaint'] = need_inpaint
                 inpaint_dict['bground_rgb'] = bground_rgb
                 inpaint_dict['ballon_mask'] = ballon_mask
+                inpaint_dict['force_inpaint'] = bool(bub_dict.get('force_inpaint', False))
+                inpaint_dict['context_ratio'] = float(bub_dict.get('context_ratio', 1.0))
+                inpaint_dict['feather_radius'] = int(bub_dict.get('feather_radius', 0))
                 user_preview_mask = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
                 user_preview_mask[:, :, [0, 2, 3]] = (mask[:, :, np.newaxis] / 2).astype(np.uint8)
                 self.inpaint_mask_item.setPixmap(ndarray2pixmap(user_preview_mask))
@@ -1146,13 +1193,57 @@ class DrawingPanel(Widget):
                 self.canvas.image_edit_mode = ImageEditMode.RectTool
             self.setCrossCursor()
 
+    def _expand_rect_inpaint_context(self, inpaint_dict):
+        """Pad a method-3 mask into a larger crop without changing its pixels."""
+        if not inpaint_dict.get('force_inpaint', False):
+            return inpaint_dict
+
+        page_img = self.canvas.imgtrans_proj.inpainted_array
+        if page_img is None:
+            return inpaint_dict
+
+        selected_rect = [int(value) for value in inpaint_dict['inpaint_rect']]
+        x1, y1, x2, y2 = selected_rect
+        selected_h, selected_w = y2 - y1, x2 - x1
+        mask = inpaint_dict.get('mask')
+        if mask is None or mask.shape[:2] != (selected_h, selected_w):
+            logger.warning('Unable to expand rectangle inpaint context: mask and selection sizes differ.')
+            return inpaint_dict
+
+        context_ratio = max(float(inpaint_dict.get('context_ratio', 2.5)), 1.01)
+        page_h, page_w = page_img.shape[:2]
+        expanded_rect = _expand_context_rect(selected_rect, page_w, page_h, context_ratio)
+        ex1, ey1, ex2, ey2 = [int(value) for value in expanded_rect]
+        expanded_h, expanded_w = ey2 - ey1, ex2 - ex1
+        if expanded_h <= 0 or expanded_w <= 0:
+            return inpaint_dict
+
+        offset_x, offset_y = x1 - ex1, y1 - ey1
+        expanded_mask = np.zeros((expanded_h, expanded_w), dtype=mask.dtype)
+        expanded_mask[offset_y:offset_y + selected_h, offset_x:offset_x + selected_w] = mask
+
+        expanded = dict(inpaint_dict)
+        expanded['img'] = np.copy(page_img[ey1:ey2, ex1:ex2])
+        expanded['mask'] = expanded_mask
+        expanded['inpaint_rect'] = [ex1, ey1, ex2, ey2]
+
+        ballon_mask = inpaint_dict.get('ballon_mask')
+        if ballon_mask is not None and ballon_mask.shape[:2] == (selected_h, selected_w):
+            expanded_ballon_mask = np.zeros((expanded_h, expanded_w), dtype=ballon_mask.dtype)
+            expanded_ballon_mask[offset_y:offset_y + selected_h, offset_x:offset_x + selected_w] = ballon_mask
+            expanded['ballon_mask'] = expanded_ballon_mask
+        return expanded
+
     def inpaintRect(self, inpaint_dict):
         img = inpaint_dict['img']
         mask = inpaint_dict['mask']
         need_inpaint = inpaint_dict['need_inpaint']
         bground_rgb = inpaint_dict['bground_rgb']
         ballon_mask = inpaint_dict['ballon_mask']
-        if not need_inpaint and pcfg.module.check_need_inpaint:
+        force_inpaint = bool(inpaint_dict.get('force_inpaint', False))
+        if force_inpaint:
+            self.runInpaint(inpaint_dict=self._expand_rect_inpaint_context(inpaint_dict))
+        elif not need_inpaint and pcfg.module.check_need_inpaint:
             bg_pixel_value = [bground_rgb[ii] for ii in range(3)]
             balloon_areas = np.where(ballon_mask > 0)
             if len(img.shape) == 3 and img.shape[2] == 4:

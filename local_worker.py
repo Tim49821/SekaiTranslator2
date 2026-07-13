@@ -3,7 +3,9 @@ import mimetypes
 import os
 import socket
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -38,6 +40,7 @@ class RelayWorker:
         worker_id: str,
         poll_interval: float,
         request_timeout: float,
+        heartbeat_interval: float = 60.0,
     ):
         self.relay_url = normalize_base_url(relay_url)
         self.local_url = normalize_base_url(local_url)
@@ -46,6 +49,7 @@ class RelayWorker:
         self.worker_id = worker_id
         self.poll_interval = poll_interval
         self.request_timeout = request_timeout
+        self.heartbeat_interval = max(heartbeat_interval, 0.0)
         self.session = requests.Session()
 
     def run_forever(self) -> None:
@@ -67,11 +71,12 @@ class RelayWorker:
 
         job_id = job["job_id"]
         try:
-            with tempfile.TemporaryDirectory(prefix="balloontrans-worker-") as tmp_dir:
-                input_path = self.download_input(job, tmp_dir)
-                result_path, media_type = self.translate_local(input_path, job.get("input_filename") or input_path.name, tmp_dir)
-                self.upload_result(job_id, result_path, media_type)
-                print(f"completed job {job_id}")
+            with self.maintain_lease(job_id):
+                with tempfile.TemporaryDirectory(prefix="balloontrans-worker-") as tmp_dir:
+                    input_path = self.download_input(job, tmp_dir)
+                    result_path, media_type = self.translate_local(input_path, job.get("input_filename") or input_path.name, tmp_dir)
+                    self.upload_result(job_id, result_path, media_type)
+                    print(f"completed job {job_id}")
         except Exception as exc:
             self.report_failure(job_id, str(exc))
             print(f"failed job {job_id}: {exc}")
@@ -89,9 +94,49 @@ class RelayWorker:
         response.raise_for_status()
         return response.json()
 
+    @contextmanager
+    def maintain_lease(self, job_id: str):
+        if self.heartbeat_interval <= 0:
+            yield
+            return
+
+        stop_event = threading.Event()
+
+        def heartbeat_loop():
+            with requests.Session() as heartbeat_session:
+                while not stop_event.wait(self.heartbeat_interval):
+                    try:
+                        response = heartbeat_session.post(
+                            urljoin(self.relay_url, f"worker/jobs/{job_id}/heartbeat"),
+                            params={"worker_id": self.worker_id},
+                            headers=self.worker_headers,
+                            timeout=min(self.request_timeout, 10.0),
+                        )
+                        response.raise_for_status()
+                    except Exception as exc:
+                        print(f"heartbeat failed for job {job_id}: {exc}")
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat_loop,
+            name=f"relay-heartbeat-{job_id[:8]}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+        try:
+            yield
+        finally:
+            stop_event.set()
+            heartbeat_thread.join(timeout=min(self.heartbeat_interval + 1.0, 5.0))
+
     def download_input(self, job: dict, tmp_dir: str) -> Path:
         input_url = urljoin(self.relay_url, job["input_url"].lstrip("/"))
-        response = self.session.get(input_url, headers=self.worker_headers, timeout=self.request_timeout, stream=True)
+        response = self.session.get(
+            input_url,
+            params={"worker_id": self.worker_id},
+            headers=self.worker_headers,
+            timeout=self.request_timeout,
+            stream=True,
+        )
         response.raise_for_status()
 
         filename = job.get("input_filename") or "input.png"
@@ -129,6 +174,7 @@ class RelayWorker:
         with result_path.open("rb") as result_file:
             response = self.session.post(
                 urljoin(self.relay_url, f"worker/jobs/{job_id}/result"),
+                params={"worker_id": self.worker_id},
                 headers=self.worker_headers,
                 files={"file": (result_path.name, result_file, media_type)},
                 timeout=self.request_timeout,
@@ -139,6 +185,7 @@ class RelayWorker:
         try:
             response = self.session.post(
                 urljoin(self.relay_url, f"worker/jobs/{job_id}/failed"),
+                params={"worker_id": self.worker_id},
                 headers=self.worker_headers,
                 json={"status_code": 500, "error": error},
                 timeout=self.request_timeout,
@@ -161,6 +208,7 @@ def parse_args():
     parser.add_argument("--worker-id", default=os.environ.get("BALLOONTRANS_WORKER_ID", default_worker_id()))
     parser.add_argument("--poll-interval", default=2.0, type=float)
     parser.add_argument("--request-timeout", default=900.0, type=float)
+    parser.add_argument("--heartbeat-interval", default=60.0, type=float)
     parser.add_argument("--once", action="store_true", help="process at most one job and exit")
     return parser.parse_args()
 
@@ -175,6 +223,7 @@ def main():
         worker_id=args.worker_id,
         poll_interval=args.poll_interval,
         request_timeout=args.request_timeout,
+        heartbeat_interval=args.heartbeat_interval,
     )
     if args.once:
         worker.process_once()

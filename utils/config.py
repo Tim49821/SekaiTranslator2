@@ -176,7 +176,7 @@ class DrawPanelConfig(Config):
 
 @nested_dataclass
 class PackageManagerConfig(Config):
-    auto_install_missing_packages: bool = True
+    auto_install_missing_packages: bool = False
     installer_backend: str = 'auto'
     extra_install_args: str = ''
 

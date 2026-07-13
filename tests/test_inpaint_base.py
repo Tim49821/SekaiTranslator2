@@ -1,13 +1,19 @@
 import unittest
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 from PIL import Image
 
 from modules.inpaint.base import InpainterBase, filter_mask_by_bboxes
 from modules.inpaint.inpaint_sdxl import SDXLInpainter
 from utils.textblock import TextBlock
-from utils.textblock_mask import refine_inpaint_mask_quality
+from utils.textblock_mask import (
+    canny_flood,
+    canny_flood_natural,
+    feather_inpaint_result,
+    refine_inpaint_mask_quality,
+)
 
 
 class CountingInpainter(InpainterBase):
@@ -48,6 +54,46 @@ class FakeSDXLPipeline:
 
 
 class InpainterBaseTest(unittest.TestCase):
+    def test_method3_reuses_method1_mask_and_forces_real_inpainting(self):
+        img = np.full((120, 180, 3), 255, dtype=np.uint8)
+        cv2.putText(
+            img,
+            "TEST",
+            (25, 75),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.5,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        original = img.copy()
+
+        method1_mask, method1_balloon, method1_info = canny_flood(img)
+        method3_mask, method3_balloon, method3_info = canny_flood_natural(img)
+
+        self.assertFalse(method1_info["need_inpaint"])
+        self.assertTrue(method3_info["force_inpaint"])
+        self.assertEqual(method3_info["context_ratio"], 2.5)
+        self.assertEqual(method3_info["feather_radius"], 2)
+        np.testing.assert_array_equal(method3_mask, method1_mask)
+        np.testing.assert_array_equal(method3_balloon, method1_balloon)
+        np.testing.assert_array_equal(img, original)
+
+    def test_method3_feather_keeps_core_and_softens_only_cleanup_margin(self):
+        original = np.zeros((15, 15, 3), dtype=np.uint8)
+        candidate = np.full_like(original, 200)
+        mask = np.zeros((15, 15), dtype=np.uint8)
+        mask[5:10, 5:10] = 255
+
+        blended, effective_mask = feather_inpaint_result(original, candidate, mask, radius=2)
+
+        self.assertTrue(np.all(blended[mask > 0] == 200))
+        self.assertTrue(np.all(blended[effective_mask == 0] == 0))
+        margin = (effective_mask > 0) & (mask == 0)
+        margin_values = blended[..., 0][margin]
+        self.assertTrue(np.any((margin_values > 0) & (margin_values < 200)))
+        self.assertGreater(np.count_nonzero(effective_mask), np.count_nonzero(mask))
+
     def test_base_move_to_device_requires_implementation(self):
         with self.assertRaises(NotImplementedError):
             InpainterBase().moveToDevice("cpu")

@@ -493,7 +493,7 @@ class MainWindow(mainwindow_cls):
         if button is None:
             return
         button.setEnabled(not busy)
-        button.setText(self.tr('Checking...') if busy else self.tr('Check update'))
+        button.setText(self.tr('Checking...') if busy else self.tr('Check upstream release'))
 
     def checkUpdate(self, silent: bool = False):
         if self.update_thread.isRunning():
@@ -502,14 +502,14 @@ class MainWindow(mainwindow_cls):
         self._set_update_check_busy(True)
         latest_label = getattr(self.configPanel, 'latest_version_label', None)
         if latest_label is not None:
-            latest_label.setText(self.tr('Latest version: ') + self.tr('Checking...'))
+            latest_label.setText(self.tr('Latest upstream version: ') + self.tr('Checking...'))
         self.update_thread.checkUpdate()
 
     def on_update_progress(self, payload: dict):
         message = payload.get('message') or payload.get('event') or ''
         latest_label = getattr(self.configPanel, 'latest_version_label', None)
         if latest_label is not None and message:
-            latest_label.setText(self.tr('Latest version: ') + str(message))
+            latest_label.setText(self.tr('Latest upstream version: ') + str(message))
 
     def on_update_finished(self, result):
         self._set_update_check_busy(False)
@@ -517,11 +517,11 @@ class MainWindow(mainwindow_cls):
         if latest_label is not None:
             if result.release_url:
                 latest_label.setText(
-                    self.tr('Latest version: ')
+                    self.tr('Latest upstream version: ')
                     + f'<a href="{result.release_url}">{result.latest_version}</a>'
                 )
             else:
-                latest_label.setText(self.tr('Latest version: ') + result.latest_version)
+                latest_label.setText(self.tr('Latest upstream version: ') + result.latest_version)
 
         if result.status == 'up_to_date':
             if not self._update_check_silent:
@@ -565,7 +565,7 @@ class MainWindow(mainwindow_cls):
         self._set_update_check_busy(False)
         latest_label = getattr(self.configPanel, 'latest_version_label', None)
         if latest_label is not None:
-            latest_label.setText(self.tr('Latest version: ') + self.tr('Check failed'))
+            latest_label.setText(self.tr('Latest upstream version: ') + self.tr('Check failed'))
         if not getattr(self, '_update_check_silent', False):
             create_error_dialog(exception, self.tr('Failed to check updates'), 'CheckUpdate')
 

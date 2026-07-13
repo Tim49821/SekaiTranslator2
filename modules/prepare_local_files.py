@@ -40,6 +40,13 @@ def _spec_from_module(module_spec_or_class) -> ModuleSpec:
         download_file_list=getattr(module_class, 'download_file_list', None),
         download_file_on_load=getattr(module_class, 'download_file_on_load', False),
         dependencies=getattr(module_class, 'dependencies', []),
+        hf_model_repo_id=getattr(module_class, 'hf_model_repo_id', None),
+        hf_model_save_dir=getattr(module_class, 'hf_model_save_dir', None),
+        hf_model_required_files=getattr(module_class, 'hf_model_required_files', None),
+        hf_model_allow_patterns=getattr(module_class, 'hf_model_allow_patterns', None),
+        hf_model_ignore_patterns=getattr(module_class, 'hf_model_ignore_patterns', None),
+        hf_model_download_on_prepare=getattr(module_class, 'hf_model_download_on_prepare', False),
+        hf_model_revision=getattr(module_class, 'hf_model_revision', None),
         resolved_class=module_class,
     )
 
@@ -56,6 +63,15 @@ def ensure_module_files(module_spec_or_class, progress_callback=None, cancel_eve
     missing = _missing_module_requirements(spec)
     if missing:
         raise MissingDependency(spec, missing)
+    if should_prepare_hf_model(spec):
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled('Module preparation cancelled by user.')
+        if not download_and_check_hf_model_files(
+            spec,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        ):
+            return False
     if spec.download_file_list is None:
         return True
 
@@ -94,7 +110,11 @@ def _hf_snapshot_is_ready(save_dir: str, required_files: List[Union[str, List[st
     return all(_required_file_exists(save_dir, required_file) for required_file in required_files)
 
 
-def download_and_check_hf_model_files(module_class: BaseModule):
+def download_and_check_hf_model_files(
+    module_class: BaseModule,
+    progress_callback=None,
+    cancel_event=None,
+):
     repo_id = getattr(module_class, 'hf_model_repo_id', None)
     save_dir = getattr(module_class, 'hf_model_save_dir', None)
     if repo_id is None or save_dir is None:
@@ -103,6 +123,9 @@ def download_and_check_hf_model_files(module_class: BaseModule):
     required_files = getattr(module_class, 'hf_model_required_files', ['config.json'])
     if _hf_snapshot_is_ready(save_dir, required_files):
         return True
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise DownloadCancelled('Module preparation cancelled by user.')
 
     if os.environ.get('BALLOONTRANS_SKIP_HF_MODEL_DOWNLOAD', '').strip().lower() in {'1', 'true', 'yes'}:
         LOGGER.warning(f'Skipping Hugging Face model download for {module_class}: BALLOONTRANS_SKIP_HF_MODEL_DOWNLOAD is set.')
@@ -116,6 +139,13 @@ def download_and_check_hf_model_files(module_class: BaseModule):
 
     try:
         LOGGER.info(f'downloading Hugging Face model {repo_id} to {save_dir} ...')
+        if progress_callback is not None:
+            progress_callback({
+                'event': 'file_start',
+                'module': getattr(module_class, 'key', getattr(module_class, 'name', '')),
+                'path': save_dir,
+                'url': f'https://huggingface.co/{repo_id}',
+            })
         snapshot_download(
             repo_id=repo_id,
             local_dir=save_dir,
@@ -123,6 +153,7 @@ def download_and_check_hf_model_files(module_class: BaseModule):
             token=os.environ.get('HF_TOKEN') or None,
             allow_patterns=getattr(module_class, 'hf_model_allow_patterns', None),
             ignore_patterns=getattr(module_class, 'hf_model_ignore_patterns', None),
+            revision=getattr(module_class, 'hf_model_revision', None),
         )
     except Exception:
         LOGGER.error(
@@ -133,9 +164,20 @@ def download_and_check_hf_model_files(module_class: BaseModule):
         LOGGER.error(traceback.format_exc())
         return False
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise DownloadCancelled('Module preparation cancelled by user.')
+
     if not _hf_snapshot_is_ready(save_dir, required_files):
         LOGGER.error(f'Hugging Face model {repo_id} was downloaded, but required files are still missing in {save_dir}.')
         return False
+
+    if progress_callback is not None:
+        progress_callback({
+            'event': 'file_done',
+            'module': getattr(module_class, 'key', getattr(module_class, 'name', '')),
+            'path': save_dir,
+            'url': f'https://huggingface.co/{repo_id}',
+        })
 
     return True
 

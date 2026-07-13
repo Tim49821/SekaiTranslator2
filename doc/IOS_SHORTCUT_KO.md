@@ -8,22 +8,22 @@
 
 ```text
 relay_server.py
-cloudflared tunnel run sekai-relay
+cloudflared tunnel run <tunnel-name>
 launch.py --headless-server
 local_worker.py
 ```
 
-공개 주소는 현재 다음 값으로 맞춰져 있습니다.
+공개 주소는 본인이 운영하는 Relay 도메인으로 설정합니다.
 
 ```text
-https://translator.allen-lee.blog
+https://your-domain.example
 ```
 
 단축어에서는 두 가지 API를 사용할 수 있습니다.
 
 ```text
-빠른 번역용: POST https://translator.allen-lee.blog/translate/raw?filename=input.png&timeout=90
-긴 번역용:   POST https://translator.allen-lee.blog/jobs/raw?filename=input.png
+빠른 번역용: POST https://your-domain.example/translate/raw?filename=input.png&timeout=90
+긴 번역용:   POST https://your-domain.example/jobs/raw?filename=input.png
 ```
 
 `/translate/raw`는 요청 본문으로 이미지 파일 자체를 받고, 완료되면 번역된 이미지 파일을 그대로 반환합니다.
@@ -43,7 +43,7 @@ https://translator.allen-lee.blog
 4. URL 값을 아래처럼 입력합니다.
 
 ```text
-https://translator.allen-lee.blog/translate/raw?filename=input.png&timeout=90
+https://your-domain.example/translate/raw?filename=input.png&timeout=90
 ```
 
 5. 액션 `URL 내용 가져오기` 또는 `Get Contents of URL`을 추가합니다.
@@ -86,7 +86,7 @@ Authorization: Bearer <BT_CLIENT_TOKEN 값>
 2. `URL` 액션에 아래 값을 넣습니다.
 
 ```text
-https://translator.allen-lee.blog/jobs/raw?filename=input.png
+https://your-domain.example/jobs/raw?filename=input.png
 ```
 
 3. `URL 내용 가져오기`를 `POST`, `요청 본문: 파일`로 설정하고 파일 값에 사진을 넣습니다.
@@ -101,14 +101,14 @@ Authorization: Bearer <BT_CLIENT_TOKEN 값>
 7. 반복 안에서 아래 URL을 만들어 `GET` 요청합니다.
 
 ```text
-https://translator.allen-lee.blog/jobs/<job_id>
+https://your-domain.example/jobs/<job_id>
 ```
 
 8. 상태 응답에서 `status` 값을 꺼냅니다.
 9. `status`가 `done`이면 아래 URL을 `GET`으로 호출하고 결과 이미지를 `훑어보기` 또는 `사진 앨범에 저장`으로 보냅니다.
 
 ```text
-https://translator.allen-lee.blog/jobs/<job_id>/result
+https://your-domain.example/jobs/<job_id>/result
 ```
 
 10. `status`가 `failed`이면 `error` 값을 알림으로 보여주고 중단합니다.
@@ -136,7 +136,7 @@ Bearer client-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ```bash
 source .env.headless
-curl -sS -X POST "https://translator.allen-lee.blog/translate/raw?filename=input.png&timeout=90" \
+curl -sS -X POST "https://your-domain.example/translate/raw?filename=input.png&timeout=90" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN" \
   -H "Content-Type: image/png" \
   --data-binary "@input.png" \
@@ -149,7 +149,7 @@ curl -sS -X POST "https://translator.allen-lee.blog/translate/raw?filename=input
 
 ```bash
 source .env.headless
-curl -sS -X POST "https://translator.allen-lee.blog/jobs/raw?filename=input.png" \
+curl -sS -X POST "https://your-domain.example/jobs/raw?filename=input.png" \
   -H "Authorization: Bearer $BT_CLIENT_TOKEN" \
   -H "Content-Type: image/png" \
   --data-binary "@input.png"
@@ -185,7 +185,7 @@ Cloudflare가 긴 HTTP 응답을 기다리다가 끊은 상태일 수 있습니�
 worker/headless 번역기가 멈춘 상태일 수도 있습니다.
 
 ```bash
-curl -sS https://translator.allen-lee.blog/health
+curl -sS https://your-domain.example/health
 curl -sS http://127.0.0.1:8000/health
 ```
 

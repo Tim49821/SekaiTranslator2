@@ -95,6 +95,18 @@ if platform.system() == 'Darwin' and platform.mac_ver()[0] >= '10.15':
     if len(macos_ocr_supported_languages) > 0:
         @register_OCR('macos_ocr')
         class OCRApple(OCRBase):
+            # Vision supplies the full language list only at runtime. Keep a
+            # usable lazy-registry fallback so a fresh config still renders
+            # this module's settings without importing Vision eagerly.
+            lazy_params = {
+                'language': {
+                    'type': 'selector',
+                    'options': ['en-US'],
+                    'value': 'en-US',
+                    'editable': True,
+                },
+                'confidence_level': '0.1',
+            }
             params = {
                 'language': {
                     'type':'selector',

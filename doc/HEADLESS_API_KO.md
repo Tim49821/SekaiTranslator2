@@ -109,7 +109,10 @@ python relay_server.py \
   --storage-dir relay_storage \
   --api-token "$BT_CLIENT_TOKEN" \
   --worker-token "$BT_WORKER_TOKEN" \
-  --max-upload-mb 50
+  --max-upload-mb 50 \
+  --claim-lease-seconds 1800 \
+  --max-jobs 1000 \
+  --max-storage-mb 2048
 ```
 
 로컬 확인:
@@ -180,7 +183,8 @@ python local_worker.py \
   --relay-url "$BT_RELAY_PUBLIC_URL" \
   --local-url http://127.0.0.1:8000 \
   --worker-token "$BT_WORKER_TOKEN" \
-  --local-token "$BT_LOCAL_TOKEN"
+  --local-token "$BT_LOCAL_TOKEN" \
+  --heartbeat-interval 60
 ```
 
 한 번만 처리하고 종료하려면:
@@ -299,7 +303,7 @@ curl -sS "$BT_RELAY_PUBLIC_URL/jobs/abc123/result" \
 
 ```bash
 source .env.headless
-python relay_server.py --host 127.0.0.1 --port 9000 --storage-dir relay_storage --api-token "$BT_CLIENT_TOKEN" --worker-token "$BT_WORKER_TOKEN" --max-upload-mb 50
+python relay_server.py --host 127.0.0.1 --port 9000 --storage-dir relay_storage --api-token "$BT_CLIENT_TOKEN" --worker-token "$BT_WORKER_TOKEN" --max-upload-mb 50 --claim-lease-seconds 1800 --max-jobs 1000 --max-storage-mb 2048
 ```
 
 터미널 2:
@@ -319,7 +323,7 @@ python launch.py --headless-server --host 127.0.0.1 --port 8000 --api-token "$BT
 
 ```bash
 source .env.headless
-python local_worker.py --relay-url "$BT_RELAY_PUBLIC_URL" --local-url http://127.0.0.1:8000 --worker-token "$BT_WORKER_TOKEN" --local-token "$BT_LOCAL_TOKEN"
+python local_worker.py --relay-url "$BT_RELAY_PUBLIC_URL" --local-url http://127.0.0.1:8000 --worker-token "$BT_WORKER_TOKEN" --local-token "$BT_LOCAL_TOKEN" --heartbeat-interval 60
 ```
 
 클라이언트:
@@ -334,10 +338,13 @@ curl -sS -X POST "$BT_RELAY_PUBLIC_URL/translate/raw?filename=input.png&timeout=
 - `relay_server.py`와 `cloudflared tunnel run`은 현재 터미널 세션이 종료되면 같이 종료됩니다.
 - 상시 운영하려면 macOS `launchd`, `tmux`, `screen`, 또는 별도 서버 프로세스 매니저에 등록하세요.
 - `cloudflared service install`로 시스템 서비스 등록도 가능하지만, 로컬 네트워크/계정 상태에 따라 권한 설정이 필요할 수 있습니다.
-- 외부 공개 주소를 사용할 때는 반드시 `--api-token`과 `--worker-token`을 설정하세요.
+- 외부 공개 주소를 사용할 때는 반드시 `--api-token`과 `--worker-token`을 설정하세요. loopback이 아닌 host에 토큰 없이 바인딩하면 서버가 시작을 거부합니다. `--allow-unauthenticated-public`은 격리된 테스트 환경 외에는 사용하지 마세요.
 - Relay 서버와 Headless 번역기는 `--max-upload-mb` 또는 `BALLOONTRANS_MAX_UPLOAD_BYTES`로 업로드 크기 제한을 설정할 수 있습니다.
-- Relay 서버에는 원본 이미지와 결과 이미지가 `relay_storage` 아래에 TTL 동안 저장됩니다.
+- Relay 서버에는 원본 이미지와 결과 이미지가 `relay_storage` 아래에 TTL 동안 저장되고, job metadata는 `relay_storage/relay_jobs.sqlite3`에 보존됩니다.
 - 완료된 job은 `--result-ttl` 초 이후 정리됩니다. 기본값은 3600초입니다.
+- Relay는 `--max-jobs`와 `--max-storage-mb`를 넘는 새 job을 `503`으로 거부합니다.
+- worker claim은 lease 방식입니다. `local_worker.py`는 `--heartbeat-interval`마다 lease를 갱신하며, `--claim-lease-seconds` 동안 heartbeat가 없으면 job이 다시 `queued`로 돌아갑니다.
+- headless 모드에서 누락된 Python 패키지 설치를 허용하려면 `launch.py`에 `--allow-package-install`을 명시해야 합니다. 기본값은 설치하지 않음입니다.
 
 ## 9. 문제 해결
 
@@ -357,7 +364,7 @@ curl -sS http://127.0.0.1:8000/health
 
 ### job이 `running`에서 멈춤
 
-번역 모델 로딩 중이거나 OCR/번역 처리 시간이 오래 걸리는 상태일 수 있습니다. `local_worker.py`와 `launch.py --headless-server` 터미널 로그를 확인하세요.
+번역 모델 로딩 중이거나 OCR/번역 처리 시간이 오래 걸리는 상태일 수 있습니다. `local_worker.py`와 `launch.py --headless-server` 터미널 로그를 확인하세요. worker가 종료되거나 heartbeat가 끊기면 claim lease 만료 후 job은 자동으로 `queued`로 복구됩니다.
 
 ### `401 Unauthorized`
 

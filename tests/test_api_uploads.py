@@ -43,21 +43,21 @@ class ApiUploadTest(unittest.TestCase):
 
     def test_relay_store_validates_raw_job_images(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = RelayJobStore(temp_dir, result_ttl_seconds=60, max_upload_bytes=1024 * 1024)
+            with RelayJobStore(temp_dir, result_ttl_seconds=60, max_upload_bytes=1024 * 1024) as store:
 
-            job = store.submit_bytes(png_bytes(), "input.png", ".png")
+                job = store.submit_bytes(png_bytes(), "input.png", ".png")
 
-            self.assertEqual(job.status, "queued")
-            self.assertTrue(os.path.exists(job.input_path))
+                self.assertEqual(job.status, "queued")
+                self.assertTrue(os.path.exists(job.input_path))
 
     def test_relay_store_rejects_invalid_raw_image_and_cleans_job_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = RelayJobStore(temp_dir, result_ttl_seconds=60, max_upload_bytes=1024 * 1024)
+            with RelayJobStore(temp_dir, result_ttl_seconds=60, max_upload_bytes=1024 * 1024) as store:
 
-            with self.assertRaises(InvalidImageUpload):
-                store.submit_bytes(b"not an image", "input.png", ".png")
+                with self.assertRaises(InvalidImageUpload):
+                    store.submit_bytes(b"not an image", "input.png", ".png")
 
-            self.assertEqual(os.listdir(temp_dir), [])
+                self.assertEqual(os.listdir(temp_dir), [RelayJobStore.DB_FILENAME])
 
     def test_headless_save_upload_to_project_validates_image(self):
         with tempfile.TemporaryDirectory() as temp_dir:

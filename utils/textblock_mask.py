@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from typing import Tuple
-from .imgproc_utils import draw_connected_labels
+from .imgproc_utils import draw_connected_labels, match_image_channels
 from .stroke_width_calculator import strokewidth_check
 
 opencv_inpaint = lambda img, mask: cv2.inpaint(img, mask, 3, cv2.INPAINT_NS)
@@ -214,6 +214,28 @@ def canny_flood(img, show_process=False, inpaint_sdthresh=10, **kwargs):
                 "inner_rect": inner_rect,
                 "need_inpaint": need_inpaint}
     
+    return mask, ballon_mask, bub_dict
+
+
+def canny_flood_natural(img, show_process=False, inpaint_sdthresh=10, **kwargs):
+    """Method 3: keep method 1's mask but always use the selected inpainter.
+
+    Method 1 marks low-variance backgrounds as safe for a flat-color shortcut.
+    The rectangle tool then paints the whole detected balloon with that color,
+    which can turn a good text selection into a conspicuous white patch.  This
+    variant keeps the proven segmentation result while asking the UI to bypass
+    that shortcut and provide the model with additional surrounding context.
+    """
+    mask, ballon_mask, bub_dict = canny_flood(
+        img,
+        show_process=show_process,
+        inpaint_sdthresh=inpaint_sdthresh,
+        **kwargs,
+    )
+    bub_dict = dict(bub_dict)
+    bub_dict["force_inpaint"] = True
+    bub_dict["context_ratio"] = 2.5
+    bub_dict["feather_radius"] = 2
     return mask, ballon_mask, bub_dict
 
 # 输入：文本块roi，分割出文本mask，根据mask计算文本bgr均值和标准差，决定纯色覆盖/inpaint修复
@@ -440,6 +462,39 @@ def refine_inpaint_mask_quality(
             refined = cv2.bitwise_and(refined, balloon)
 
     return refined
+
+
+def feather_inpaint_result(
+    original: np.ndarray,
+    inpainted: np.ndarray,
+    mask: np.ndarray,
+    radius: int = 2,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Blend a hard-composited result across the mask's outer cleanup margin."""
+    if original is None or inpainted is None or mask is None:
+        return inpainted, mask
+    if original.shape[:2] != inpainted.shape[:2] or mask.shape[:2] != inpainted.shape[:2]:
+        return inpainted, mask
+
+    effective_mask = refine_inpaint_mask_quality(mask)
+    if radius <= 0 or not np.any(effective_mask):
+        return inpainted, effective_mask
+
+    base = match_image_channels(original, inpainted)
+    hard_mask = (effective_mask > 0).astype(np.uint8)
+    distance = cv2.distanceTransform(hard_mask, cv2.DIST_L2, 3)
+    alpha = np.clip(distance / max(float(radius), 1.0), 0.0, 1.0)
+    # Never mix the original glyph back into the mask selected by the user.
+    alpha[mask > 0] = 1.0
+    if inpainted.ndim == 3:
+        alpha = alpha[:, :, np.newaxis]
+
+    blended = (
+        inpainted.astype(np.float32) * alpha
+        + base.astype(np.float32) * (1.0 - alpha)
+    )
+    blended = np.clip(np.round(blended), 0, 255).astype(inpainted.dtype)
+    return blended, effective_mask
 
 
 def extract_ballon_mask(img: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:

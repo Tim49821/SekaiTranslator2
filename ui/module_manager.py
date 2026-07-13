@@ -282,11 +282,25 @@ class InpaintThread(ModuleThread):
         self.job = lambda : self._set_module(inpainter)
         self.start()
 
-    def inpaint(self, img: np.ndarray, mask: np.ndarray, img_key: str = None, inpaint_rect=None):
-        self.job = lambda : self._inpaint(img, mask, img_key, inpaint_rect)
+    def inpaint(
+        self,
+        img: np.ndarray,
+        mask: np.ndarray,
+        img_key: str = None,
+        inpaint_rect=None,
+        **metadata,
+    ):
+        self.job = lambda : self._inpaint(img, mask, img_key, inpaint_rect, **metadata)
         self.start()
     
-    def _inpaint(self, img: np.ndarray, mask: np.ndarray, img_key: str = None, inpaint_rect=None):
+    def _inpaint(
+        self,
+        img: np.ndarray,
+        mask: np.ndarray,
+        img_key: str = None,
+        inpaint_rect=None,
+        **metadata,
+    ):
         inpaint_dict = {}
         self.inpainting = True
         try:
@@ -298,6 +312,7 @@ class InpaintThread(ModuleThread):
                 'img_key': img_key,
                 'inpaint_rect': inpaint_rect
             }
+            inpaint_dict.update(metadata)
             if not self.stop_requested:
                 self.finish_inpaint.emit(inpaint_dict)
         except Exception as e:
@@ -899,6 +914,7 @@ class ModuleManager(QObject):
                  *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.imgtrans_proj = imgtrans_proj
+        self.run_canvas_inpaint = False
         self.check_inpaint_fin_timer = QTimer(self)
         self.check_inpaint_fin_timer.timeout.connect(self.check_inpaint_th_finished)
         self.prepare_msgbox: ProgressMessageBox = None
@@ -910,6 +926,7 @@ class ModuleManager(QObject):
         self._pending_batch_package_success = None
         self._pending_batch_package_failure = None
         self._package_install_retried = set()
+        self._canvas_inpaint_request_id = 0
         self.package_install_thread: PackageInstallThread = None
         self.config_panel: ConfigPanel = None
         self.parent_widget = None
@@ -1515,7 +1532,7 @@ class ModuleManager(QObject):
         if self.inpaint_thread.isRunning():
             LOGGER.warning('Waiting for inpainting to finish')
             return
-        self.inpaint_thread.inpaint(img, mask, img_key, inpaint_rect)
+        self.inpaint_thread.inpaint(img, mask, img_key, inpaint_rect, **kwargs)
 
     def terminateRunningThread(self):
         all_stopped = True
@@ -1773,19 +1790,36 @@ class ModuleManager(QObject):
         self.finish_translate_page.emit(page_key)
     
     def on_finish_inpaint(self, inpaint_dict: dict):
+        request_id = inpaint_dict.get('_canvas_inpaint_request_id')
+        if request_id is not None and request_id != self._canvas_inpaint_request_id:
+            return
         if self.run_canvas_inpaint:
             self.canvas_inpaint_finished.emit(inpaint_dict)
             self.run_canvas_inpaint = False
 
     def canvas_inpaint(self, inpaint_dict):
+        self._canvas_inpaint_request_id += 1
+        request_id = self._canvas_inpaint_request_id
         self._prepare_modules_then(
             [('inpainter', cfg_module.inpainter)],
-            lambda: self._start_canvas_inpaint(inpaint_dict),
+            lambda: self._start_canvas_inpaint(inpaint_dict, request_id),
+            on_failure=lambda: self._fail_canvas_inpaint_prepare(request_id),
         )
 
-    def _start_canvas_inpaint(self, inpaint_dict):
+    def _start_canvas_inpaint(self, inpaint_dict, request_id=None):
+        if request_id is not None and request_id != self._canvas_inpaint_request_id:
+            return
         self.run_canvas_inpaint = True
-        self.inpaint(**inpaint_dict)
+        request = dict(inpaint_dict)
+        if request_id is not None:
+            request['_canvas_inpaint_request_id'] = request_id
+        self.inpaint(**request)
+
+    def _fail_canvas_inpaint_prepare(self, request_id):
+        if request_id != self._canvas_inpaint_request_id:
+            return
+        self.run_canvas_inpaint = False
+        self.inpaint_thread.inpaint_failed.emit()
     
     def on_translatorparam_edited(self, param_key: str, param_content: dict):
         if self.translator is not None:
@@ -1831,9 +1865,10 @@ class ModuleManager(QObject):
             module.updateParam(param_key, param_content['content'])
 
     def handle_page_changed(self):
+        self._canvas_inpaint_request_id += 1
+        self.run_canvas_inpaint = False
         if not self.imgtrans_thread.isRunning():
             if self.inpaint_thread.inpainting:
-                self.run_canvas_inpaint = False
                 self.inpaint_thread.requestStop()
 
     def on_inpainter_checker_changed(self, is_checked: bool):

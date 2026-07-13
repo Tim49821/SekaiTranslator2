@@ -4,11 +4,52 @@ import sys
 import unittest
 from pathlib import Path
 from shutil import rmtree
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import launch
 from utils.updater import BallonsTranslatorUpdater, ReleaseInfo
 
 
 class UpdaterTest(unittest.TestCase):
+    def test_source_update_defaults_to_fork_main_branch(self):
+        self.assertEqual(launch.UPDATE_REMOTE, "origin")
+        self.assertEqual(launch.BRANCH, "main")
+
+    def test_git_ahead_behind_counts_each_direction(self):
+        with patch.object(launch, "run", side_effect=["2\n", "3\n"]) as run_mock:
+            result = launch.git_ahead_behind("HEAD", "origin/main")
+
+        self.assertEqual(result, (2, 3))
+        self.assertEqual(
+            [call.args[0] for call in run_mock.call_args_list],
+            [
+                [launch.git, "rev-list", "--count", "origin/main..HEAD"],
+                [launch.git, "rev-list", "--count", "HEAD..origin/main"],
+            ],
+        )
+
+    def test_source_update_only_fast_forwards_when_local_has_no_unique_commits(self):
+        self.assertEqual(launch.source_update_action(ahead=0, behind=2), "fast_forward")
+        self.assertEqual(launch.source_update_action(ahead=1, behind=2), "diverged")
+        self.assertEqual(launch.source_update_action(ahead=1, behind=0), "ahead")
+        self.assertEqual(launch.source_update_action(ahead=0, behind=0), "up_to_date")
+
+    def test_headless_package_install_requires_explicit_opt_in(self):
+        config = SimpleNamespace(
+            package_manager=SimpleNamespace(auto_install_missing_packages=True),
+        )
+
+        self.assertFalse(launch.apply_package_install_policy(config, headless=True, allow_package_install=False))
+        self.assertTrue(launch.apply_package_install_policy(config, headless=True, allow_package_install=True))
+
+    def test_gui_package_install_policy_preserves_saved_choice(self):
+        config = SimpleNamespace(
+            package_manager=SimpleNamespace(auto_install_missing_packages=True),
+        )
+
+        self.assertTrue(launch.apply_package_install_policy(config, headless=False, allow_package_install=False))
+
     def test_apply_update_is_guarded_for_flat_layout_fork(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             updater = BallonsTranslatorUpdater(program_path=temp_dir, cache_dir=temp_dir)

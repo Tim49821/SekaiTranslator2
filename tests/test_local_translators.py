@@ -12,7 +12,11 @@ if APP_ROOT not in sys.path:
 
 from scripts import setup_gemma4_runtime
 from modules.base import BaseModule, init_translator_registries
-from modules.prepare_local_files import download_and_check_hf_model_files, should_prepare_hf_model
+from modules.prepare_local_files import (
+    download_and_check_hf_model_files,
+    ensure_module_files,
+    should_prepare_hf_model,
+)
 from modules.translators import TRANSLATORS
 from modules.translators import gemma4_worker
 from modules.translators.trans_gemma4 import Gemma4E4BTranslator
@@ -22,6 +26,7 @@ from modules.translators.trans_llm_api_json import (
     GoogleLLMTranslator,
     OpenAILLMTranslator,
 )
+from utils.registry import ModuleSpec
 
 
 class FakeInputIds:
@@ -229,6 +234,29 @@ class BaseModuleLoadingTest(unittest.TestCase):
 
 
 class LocalModelDownloadTest(unittest.TestCase):
+    def test_lazy_module_prepare_downloads_opted_in_hf_snapshot(self):
+        spec = ModuleSpec(
+            key="example",
+            import_path="example.module",
+            class_name="ExampleModule",
+            hf_model_repo_id="example/model",
+            hf_model_save_dir="data/models/example",
+            hf_model_required_files=["config.json"],
+            hf_model_download_on_prepare=True,
+        )
+
+        with patch(
+            "modules.prepare_local_files.download_and_check_hf_model_files",
+            return_value=True,
+        ) as download_mock:
+            self.assertTrue(ensure_module_files(spec))
+
+        download_mock.assert_called_once_with(
+            spec,
+            progress_callback=None,
+            cancel_event=None,
+        )
+
     def test_downloads_missing_hf_snapshot_to_declared_model_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             class FakeModule:

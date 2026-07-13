@@ -25,6 +25,20 @@ DECORATORS = {
     'inpainter': {'register_inpainter'},
     'ocr': {'register_OCR'},
 }
+MODULE_METADATA_ATTRS = {
+    'params',
+    'lazy_params',
+    'download_file_list',
+    'download_file_on_load',
+    'dependencies',
+    'hf_model_repo_id',
+    'hf_model_save_dir',
+    'hf_model_required_files',
+    'hf_model_allow_patterns',
+    'hf_model_ignore_patterns',
+    'hf_model_download_on_prepare',
+    'hf_model_revision',
+}
 EXTRA_MODULE_FILES = {
     'translator': [str(MODULE_ROOT / 'translators' / 'base.py')],
     'inpainter': [str(MODULE_ROOT / 'inpaint' / 'base.py')],
@@ -160,6 +174,32 @@ class SafeEval:
 
     def visit_Constant(self, node):
         return node.value
+
+    def visit_JoinedStr(self, node):
+        values = []
+        for part in node.values:
+            value = self.visit(part)
+            if value is UNKNOWN:
+                return UNKNOWN
+            values.append(str(value))
+        return ''.join(values)
+
+    def visit_FormattedValue(self, node):
+        value = self.visit(node.value)
+        if value is UNKNOWN:
+            return UNKNOWN
+        if node.conversion == ord('r'):
+            value = repr(value)
+        elif node.conversion == ord('a'):
+            value = ascii(value)
+        else:
+            value = str(value)
+        if node.format_spec is None:
+            return value
+        format_spec = self.visit(node.format_spec)
+        if format_spec is UNKNOWN:
+            return UNKNOWN
+        return format(value, format_spec)
 
     def visit_Name(self, node):
         if node.id in self.env:
@@ -413,6 +453,8 @@ class SafeEval:
             if value is UNKNOWN:
                 return UNKNOWN
             if isinstance(value, dict):
+                if node.func.attr == 'copy':
+                    return value.copy()
                 if node.func.attr == 'keys':
                     return list(value.keys())
                 if node.func.attr == 'values':
@@ -426,6 +468,8 @@ class SafeEval:
                     return value.upper()
                 if node.func.attr == 'strip':
                     return value.strip()
+            if isinstance(value, (list, set)) and node.func.attr == 'copy':
+                return value.copy()
             return UNKNOWN
 
         if func_name == 'DEVICE_SELECTOR':
@@ -528,9 +572,9 @@ def _collect_class_attrs(class_node: ast.ClassDef, env: Dict[str, Any]) -> Dict[
                 value = evaluator.eval(value_node)
                 if value is not UNKNOWN:
                     class_env[name] = value
-                    if name in {'params', 'download_file_list', 'download_file_on_load', 'dependencies'}:
+                    if name in MODULE_METADATA_ATTRS:
                         attrs[name] = value
-                elif name in {'params', 'download_file_list', 'download_file_on_load', 'dependencies'}:
+                elif name in MODULE_METADATA_ATTRS:
                     warnings.append(f'{class_node.name}.{name} could not be evaluated lazily')
             elif isinstance(node, ast.If):
                 cond = evaluator.eval(node.test)
@@ -543,6 +587,13 @@ def _collect_class_attrs(class_node: ast.ClassDef, env: Dict[str, Any]) -> Dict[
                     walk(node.orelse)
 
     walk(class_node.body)
+    if 'params' not in attrs and isinstance(attrs.get('lazy_params'), dict):
+        attrs['params'] = deepcopy(attrs['lazy_params'])
+        warnings = [
+            warning for warning in warnings
+            if warning != f'{class_node.name}.params could not be evaluated lazily'
+        ]
+    attrs.pop('lazy_params', None)
     if warnings:
         attrs['__metadata_warnings'] = warnings
     return attrs
@@ -639,8 +690,6 @@ def _collect_translator_langs(class_node: ast.ClassDef, env: Dict[str, Any]) -> 
         src = langs or None
     if tgt is None:
         tgt = langs or None
-    if not langs and src is None and tgt is None:
-        warnings.append(f'{class_node.name} has no lazy translator language metadata')
     return src, tgt, warnings
 
 
@@ -685,8 +734,17 @@ def _scan_file(path: str, module_type: str) -> List[ModuleSpec]:
         'True': True,
         'False': False,
         'None': None,
+        'str': str,
+        'int': int,
+        'float': float,
+        'bool': bool,
+        'list': list,
+        'tuple': tuple,
+        'set': set,
+        'dict': dict,
     }
     class_attrs_by_name: Dict[str, Dict[str, Any]] = {}
+    translator_langs_by_class: Dict[str, Tuple[Optional[List[str]], Optional[List[str]]]] = {}
 
     def walk(stmts):
         _walk_assignments(stmts, env)
@@ -706,6 +764,23 @@ def _scan_file(path: str, module_type: str) -> List[ModuleSpec]:
                 if 'params' in attrs_for_class:
                     env[f'{node.name}_PARAMS'] = deepcopy(attrs_for_class['params'])
 
+                src = tgt = None
+                lang_warnings = []
+                if module_type == 'translator':
+                    src, tgt, lang_warnings = _collect_translator_langs(node, env)
+                    inherited_src = inherited_tgt = None
+                    for base in node.bases:
+                        base_name = _call_name(base)
+                        base_langs = translator_langs_by_class.get(base_name)
+                        if base_langs is None:
+                            continue
+                        base_src, base_tgt = base_langs
+                        inherited_src = inherited_src or deepcopy(base_src)
+                        inherited_tgt = inherited_tgt or deepcopy(base_tgt)
+                    src = src or inherited_src
+                    tgt = tgt or inherited_tgt
+                    translator_langs_by_class[node.name] = (deepcopy(src), deepcopy(tgt))
+
                 key = None
                 for decorator in node.decorator_list:
                     key = _decorator_key(decorator, module_type, env)
@@ -714,10 +789,8 @@ def _scan_file(path: str, module_type: str) -> List[ModuleSpec]:
                 if key is None:
                     continue
                 attrs = attrs_for_class
-                src = tgt = None
                 metadata_warnings = attrs.get('__metadata_warnings', []).copy()
                 if module_type == 'translator':
-                    src, tgt, lang_warnings = _collect_translator_langs(node, env)
                     metadata_warnings.extend(lang_warnings)
                 specs.append(ModuleSpec(
                     key=key,
@@ -728,6 +801,13 @@ def _scan_file(path: str, module_type: str) -> List[ModuleSpec]:
                     download_file_list=attrs.get('download_file_list'),
                     download_file_on_load=attrs.get('download_file_on_load', False),
                     dependencies=deepcopy(attrs.get('dependencies', [])),
+                    hf_model_repo_id=attrs.get('hf_model_repo_id'),
+                    hf_model_save_dir=attrs.get('hf_model_save_dir'),
+                    hf_model_required_files=deepcopy(attrs.get('hf_model_required_files')),
+                    hf_model_allow_patterns=deepcopy(attrs.get('hf_model_allow_patterns')),
+                    hf_model_ignore_patterns=deepcopy(attrs.get('hf_model_ignore_patterns')),
+                    hf_model_download_on_prepare=attrs.get('hf_model_download_on_prepare', False),
+                    hf_model_revision=attrs.get('hf_model_revision'),
                     supported_src_list=src,
                     supported_tgt_list=tgt,
                     metadata_warnings=metadata_warnings,

@@ -32,6 +32,7 @@ class ConfigTemplateTest(unittest.TestCase):
         self.assertEqual(config.module.translator, "google")
         self.assertEqual(config.module.ocr, "mit48px")
         self.assertEqual(config.recent_proj_list, [])
+        self.assertFalse(config.package_manager.auto_install_missing_packages)
 
     def test_config_template_does_not_persist_local_state(self):
         config = self.load_template_dict()

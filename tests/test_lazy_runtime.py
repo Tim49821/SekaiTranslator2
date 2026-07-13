@@ -11,6 +11,7 @@ class LazyRuntimeTest(unittest.TestCase):
             import sys
             import modules
             from modules.base import init_module_registries
+            from modules.lazy_registry import validate_lazy_module_specs
             from utils.registry import ModuleSpec
 
             init_module_registries()
@@ -23,6 +24,32 @@ class LazyRuntimeTest(unittest.TestCase):
             assert 'torch' in ctd.dependencies
             assert 'torch' in mit.dependencies
             assert llm.params and 'model' in llm.params
+            specs = [
+                value
+                for registry in modules.MODULETYPE_TO_REGISTRIES.values()
+                for value in registry.module_dict.values()
+                if isinstance(value, ModuleSpec)
+            ]
+            assert validate_lazy_module_specs(specs) == []
+
+            for registry, key in (
+                (modules.TEXTDETECTORS, 'comic_text_bubble'),
+                (modules.OCR, 'one_ocr'),
+                (modules.INPAINTERS, 'sdxl_inpaint'),
+                (modules.TRANSLATORS, 'google'),
+            ):
+                spec = registry.get(key)
+                assert isinstance(spec, ModuleSpec), (key, type(spec))
+                assert spec.params, key
+
+            gemma = modules.TRANSLATORS.get('Gemma 4 E4B-it')
+            llm_translator = modules.TRANSLATORS.get('LLM OpenAI')
+            assert gemma.supported_src_list and gemma.supported_tgt_list
+            assert llm_translator.supported_src_list and llm_translator.supported_tgt_list
+
+            comic = modules.TEXTDETECTORS.get('comic_text_bubble')
+            assert comic.hf_model_repo_id == 'ogkalu/comic-text-and-bubble-detector'
+            assert comic.hf_model_download_on_prepare is True
             assert 'torch' not in sys.modules
             """
         )

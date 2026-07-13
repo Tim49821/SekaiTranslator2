@@ -23,6 +23,13 @@ class ModuleSpec:
     download_file_list: List = None
     download_file_on_load: bool = False
     dependencies: List[str] = field(default_factory=list)
+    hf_model_repo_id: str = None
+    hf_model_save_dir: str = None
+    hf_model_required_files: List = None
+    hf_model_allow_patterns: List = None
+    hf_model_ignore_patterns: List = None
+    hf_model_download_on_prepare: bool = False
+    hf_model_revision: str = None
     supported_src_list: List[str] = None
     supported_tgt_list: List[str] = None
     available: bool = True
@@ -304,6 +311,13 @@ class Registry:
                 download_file_list=deepcopy(getattr(module, 'download_file_list', None)),
                 download_file_on_load=getattr(module, 'download_file_on_load', False),
                 dependencies=deepcopy(getattr(module, 'dependencies', [])),
+                hf_model_repo_id=getattr(module, 'hf_model_repo_id', None),
+                hf_model_save_dir=getattr(module, 'hf_model_save_dir', None),
+                hf_model_required_files=deepcopy(getattr(module, 'hf_model_required_files', None)),
+                hf_model_allow_patterns=deepcopy(getattr(module, 'hf_model_allow_patterns', None)),
+                hf_model_ignore_patterns=deepcopy(getattr(module, 'hf_model_ignore_patterns', None)),
+                hf_model_download_on_prepare=getattr(module, 'hf_model_download_on_prepare', False),
+                hf_model_revision=getattr(module, 'hf_model_revision', None),
                 resolved_class=module,
             )
         return None

@@ -83,6 +83,7 @@ Rect Tool
 
 To 'erase' unwanted inpainted results, use the inpainting tool or rect tool with your **right button** pressed.  
 The result depends on how accurately the algorithm ("method 1" and "method 2" in the gif) extracts the text mask. It could perform worse on complex text & background.  
+"Method 3" reuses method 1's mask detection but always runs the selected inpainter with extra surrounding context and a soft edge blend instead of filling the whole balloon with one color. Use it when method 1 produces a conspicuous white patch.
 
 ## Text editing
 <img src="doc/src/textedit.gif">

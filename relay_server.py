@@ -1,9 +1,11 @@
 import argparse
 import os
 import shutil
+import sqlite3
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -21,6 +23,7 @@ from utils.api_uploads import (
     validate_image_file,
     write_upload_bytes,
 )
+from utils.api_security import require_auth_for_public_bind
 
 
 IMG_EXT = {".bmp", ".jpg", ".png", ".jpeg", ".webp", ".jxl"}
@@ -53,6 +56,7 @@ class RelayJob:
     updated_at: float
     finished_at: Optional[float] = None
     worker_id: Optional[str] = None
+    lease_expires_at: Optional[float] = None
     result_path: Optional[str] = None
     media_type: str = "image/png"
     error: Optional[str] = None
@@ -69,6 +73,7 @@ class RelayJob:
             "finished_at": self.finished_at,
             "input_filename": self.input_filename,
             "worker_id": self.worker_id,
+            "lease_expires_at": self.lease_expires_at,
             "status_url": f"/jobs/{self.job_id}",
             "result_url": f"/jobs/{self.job_id}/result",
         }
@@ -79,17 +84,145 @@ class RelayJob:
         return data
 
 
+class RelayCapacityExceeded(RuntimeError):
+    pass
+
+
+class InvalidJobTransition(RuntimeError):
+    pass
+
+
 class RelayJobStore:
-    def __init__(self, storage_dir: str, result_ttl_seconds: int, max_upload_bytes: int):
+    DB_FILENAME = "relay_jobs.sqlite3"
+
+    def __init__(
+        self,
+        storage_dir: str,
+        result_ttl_seconds: int,
+        max_upload_bytes: int,
+        claim_lease_seconds: int = 1800,
+        max_jobs: int = 1000,
+        max_storage_bytes: int = 2 * 1024 * 1024 * 1024,
+    ):
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.result_ttl_seconds = max(result_ttl_seconds, 1)
         self.max_upload_bytes = max(max_upload_bytes, 1)
+        self.claim_lease_seconds = max(claim_lease_seconds, 1)
+        self.max_jobs = max(max_jobs, 1)
+        self.max_storage_bytes = max(max_storage_bytes, self.max_upload_bytes)
         self._jobs = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._db = sqlite3.connect(
+            str(self.storage_dir / self.DB_FILENAME),
+            check_same_thread=False,
+        )
+        self._db.row_factory = sqlite3.Row
+        self._create_schema()
+        self._load_jobs()
+        self.cleanup()
+
+    def _create_schema(self) -> None:
+        with self._lock:
+            self._db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS relay_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    job_dir TEXT NOT NULL,
+                    input_path TEXT NOT NULL,
+                    input_filename TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    finished_at REAL,
+                    worker_id TEXT,
+                    lease_expires_at REAL,
+                    result_path TEXT,
+                    media_type TEXT NOT NULL,
+                    error TEXT,
+                    status_code INTEGER NOT NULL
+                )
+                """
+            )
+            self._db.commit()
+
+    def _load_jobs(self) -> None:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM relay_jobs ORDER BY created_at").fetchall()
+            self._jobs = {
+                row["job_id"]: RelayJob(**dict(row))
+                for row in rows
+            }
+
+    def _persist_job_locked(self, job: RelayJob) -> None:
+        values = (
+            job.job_id,
+            job.job_dir,
+            job.input_path,
+            job.input_filename,
+            job.status,
+            job.created_at,
+            job.updated_at,
+            job.finished_at,
+            job.worker_id,
+            job.lease_expires_at,
+            job.result_path,
+            job.media_type,
+            job.error,
+            job.status_code,
+        )
+        self._db.execute(
+            """
+            INSERT OR REPLACE INTO relay_jobs (
+                job_id, job_dir, input_path, input_filename, status,
+                created_at, updated_at, finished_at, worker_id,
+                lease_expires_at, result_path, media_type, error, status_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+        self._db.commit()
+
+    def _delete_job_locked(self, job_id: str) -> None:
+        self._db.execute("DELETE FROM relay_jobs WHERE job_id = ?", (job_id,))
+        self._db.commit()
+
+    @staticmethod
+    def _directory_size(path: Path) -> int:
+        if not path.exists():
+            return 0
+        return sum(
+            entry.stat().st_size
+            for entry in path.rglob('*')
+            if entry.is_file()
+        )
+
+    def _storage_bytes_locked(self, extra_paths=()) -> int:
+        paths = {Path(job.job_dir) for job in self._jobs.values()}
+        paths.update(Path(path) for path in extra_paths)
+        return sum(self._directory_size(path) for path in paths)
+
+    def _check_new_job_capacity(self) -> None:
+        with self._lock:
+            if len(self._jobs) >= self.max_jobs:
+                raise RelayCapacityExceeded(f"Relay job limit reached ({self.max_jobs}).")
+
+    def _register_job(self, job: RelayJob) -> RelayJob:
+        with self._lock:
+            if len(self._jobs) >= self.max_jobs:
+                raise RelayCapacityExceeded(f"Relay job limit reached ({self.max_jobs}).")
+            storage_bytes = self._storage_bytes_locked(extra_paths=[job.job_dir])
+            if storage_bytes > self.max_storage_bytes:
+                raise RelayCapacityExceeded(
+                    f"Relay storage limit reached ({self.max_storage_bytes} bytes)."
+                )
+            self._jobs[job.job_id] = job
+            self._persist_job_locked(job)
+            return job
 
     def submit(self, file: UploadFile, ext: str) -> RelayJob:
         self.cleanup()
+        self._check_new_job_capacity()
         job_id = uuid.uuid4().hex
         job_dir = self.storage_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
@@ -113,12 +246,15 @@ class RelayJobStore:
             created_at=now,
             updated_at=now,
         )
-        with self._lock:
-            self._jobs[job_id] = job
-        return job
+        try:
+            return self._register_job(job)
+        except Exception:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
 
     def submit_bytes(self, content: bytes, filename: str, ext: str) -> RelayJob:
         self.cleanup()
+        self._check_new_job_capacity()
         job_id = uuid.uuid4().hex
         job_dir = self.storage_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=False)
@@ -142,9 +278,11 @@ class RelayJobStore:
             created_at=now,
             updated_at=now,
         )
-        with self._lock:
-            self._jobs[job_id] = job
-        return job
+        try:
+            return self._register_job(job)
+        except Exception:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise
 
     def get(self, job_id: str) -> Optional[RelayJob]:
         self.cleanup()
@@ -164,21 +302,63 @@ class RelayJobStore:
         return self.get(job_id)
 
     def claim_next(self, worker_id: str) -> Optional[RelayJob]:
+        if not worker_id.strip():
+            raise InvalidJobTransition("worker_id must not be empty.")
         self.cleanup()
         with self._lock:
             for job in self._jobs.values():
                 if job.status == "queued":
+                    now = time.time()
                     job.status = "running"
                     job.worker_id = worker_id
-                    job.updated_at = time.time()
+                    job.updated_at = now
+                    job.lease_expires_at = now + self.claim_lease_seconds
+                    self._persist_job_locked(job)
                     return job
         return None
 
-    def complete(self, job_id: str, result_path: str, media_type: str) -> Optional[RelayJob]:
+    def _owned_running_job_locked(self, job_id: str, worker_id: str) -> Optional[RelayJob]:
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        if job.status != "running":
+            raise InvalidJobTransition(
+                f"Job {job_id} is {job.status}; expected running."
+            )
+        if job.worker_id != worker_id:
+            raise InvalidJobTransition(
+                f"Job {job_id} is owned by a different worker."
+            )
+        return job
+
+    def assert_worker_owns(self, job_id: str, worker_id: str) -> Optional[RelayJob]:
+        self.cleanup()
         with self._lock:
-            job = self._jobs.get(job_id)
+            return self._owned_running_job_locked(job_id, worker_id)
+
+    def heartbeat(self, job_id: str, worker_id: str) -> Optional[RelayJob]:
+        self.cleanup()
+        with self._lock:
+            job = self._owned_running_job_locked(job_id, worker_id)
             if job is None:
                 return None
+            now = time.time()
+            job.updated_at = now
+            job.lease_expires_at = now + self.claim_lease_seconds
+            self._persist_job_locked(job)
+            return job
+
+    def complete(self, job_id: str, result_path: str, media_type: str, worker_id: str) -> Optional[RelayJob]:
+        self.cleanup()
+        with self._lock:
+            job = self._owned_running_job_locked(job_id, worker_id)
+            if job is None:
+                return None
+            storage_bytes = self._storage_bytes_locked()
+            if storage_bytes > self.max_storage_bytes:
+                raise RelayCapacityExceeded(
+                    f"Relay storage limit reached ({self.max_storage_bytes} bytes)."
+                )
             now = time.time()
             job.status = "done"
             job.result_path = result_path
@@ -187,11 +367,14 @@ class RelayJobStore:
             job.status_code = 200
             job.updated_at = now
             job.finished_at = now
+            job.lease_expires_at = None
+            self._persist_job_locked(job)
             return job
 
-    def fail(self, job_id: str, error: str, status_code: int = 500) -> Optional[RelayJob]:
+    def fail(self, job_id: str, error: str, worker_id: str, status_code: int = 500) -> Optional[RelayJob]:
+        self.cleanup()
         with self._lock:
-            job = self._jobs.get(job_id)
+            job = self._owned_running_job_locked(job_id, worker_id)
             if job is None:
                 return None
             now = time.time()
@@ -200,6 +383,8 @@ class RelayJobStore:
             job.status_code = status_code
             job.updated_at = now
             job.finished_at = now
+            job.lease_expires_at = None
+            self._persist_job_locked(job)
             return job
 
     def stats(self) -> dict:
@@ -208,20 +393,47 @@ class RelayJobStore:
             for job in self._jobs.values():
                 counts[job.status] = counts.get(job.status, 0) + 1
             counts["total"] = len(self._jobs)
+            counts["storage_bytes"] = self._storage_bytes_locked()
+            counts["max_jobs"] = self.max_jobs
+            counts["max_storage_bytes"] = self.max_storage_bytes
             return counts
 
     def cleanup(self) -> None:
         now = time.time()
         expired = []
         with self._lock:
+            for job in self._jobs.values():
+                if (
+                    job.status == "running"
+                    and job.lease_expires_at is not None
+                    and job.lease_expires_at <= now
+                ):
+                    job.status = "queued"
+                    job.worker_id = None
+                    job.lease_expires_at = None
+                    job.updated_at = now
+                    self._persist_job_locked(job)
             for job_id, job in self._jobs.items():
                 if job.finished_at is not None and now - job.finished_at > self.result_ttl_seconds:
                     expired.append((job_id, job.job_dir))
             for job_id, _ in expired:
                 self._jobs.pop(job_id, None)
+                self._delete_job_locked(job_id)
 
         for _, job_dir in expired:
             shutil.rmtree(job_dir, ignore_errors=True)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._db is not None:
+                self._db.close()
+                self._db = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
 
 def upload_extension(filename: str, content_type: str) -> Optional[str]:
@@ -272,18 +484,44 @@ def raise_upload_http_exception(exc: Exception) -> None:
     raise HTTPException(status_code=400, detail=str(exc))
 
 
+def raise_store_http_exception(exc: Exception) -> None:
+    if isinstance(exc, RelayCapacityExceeded):
+        raise HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, InvalidJobTransition):
+        raise HTTPException(status_code=409, detail=str(exc))
+    raise exc
+
+
 def create_app(
     storage_dir: str,
     api_token: str = "",
     worker_token: str = "",
     result_ttl_seconds: int = 3600,
     max_upload_bytes: int = None,
+    claim_lease_seconds: int = 1800,
+    max_jobs: int = 1000,
+    max_storage_bytes: int = 2 * 1024 * 1024 * 1024,
 ):
     max_upload_bytes = max_upload_bytes or max_upload_bytes_from_env()
-    store = RelayJobStore(storage_dir, result_ttl_seconds, max_upload_bytes)
+    store = RelayJobStore(
+        storage_dir,
+        result_ttl_seconds,
+        max_upload_bytes,
+        claim_lease_seconds=claim_lease_seconds,
+        max_jobs=max_jobs,
+        max_storage_bytes=max_storage_bytes,
+    )
     require_client_auth = make_auth_dependency(api_token)
     require_worker_auth = make_auth_dependency(worker_token or api_token)
-    app = FastAPI(title="BalloonsTranslator Relay API")
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            store.close()
+
+    app = FastAPI(title="BalloonsTranslator Relay API", lifespan=lifespan)
+    app.state.job_store = store
 
     @app.middleware("http")
     async def reject_large_requests(request: Request, call_next):
@@ -318,6 +556,8 @@ def create_app(
             job = store.submit(file, ext)
         except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
             raise_upload_http_exception(exc)
+        except RelayCapacityExceeded as exc:
+            raise_store_http_exception(exc)
 
         completed = store.wait_for_terminal(job.job_id, timeout, poll_interval)
         if completed is None:
@@ -342,6 +582,8 @@ def create_app(
             job = store.submit_bytes(content, filename, ext)
         except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
             raise_upload_http_exception(exc)
+        except RelayCapacityExceeded as exc:
+            raise_store_http_exception(exc)
 
         completed = store.wait_for_terminal(job.job_id, timeout, poll_interval)
         if completed is None:
@@ -359,6 +601,8 @@ def create_app(
             job = store.submit(file, ext)
         except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
             raise_upload_http_exception(exc)
+        except RelayCapacityExceeded as exc:
+            raise_store_http_exception(exc)
         return job.to_dict()
 
     @app.post("/jobs/raw", status_code=202)
@@ -375,6 +619,8 @@ def create_app(
             job = store.submit_bytes(content, filename, ext)
         except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
             raise_upload_http_exception(exc)
+        except RelayCapacityExceeded as exc:
+            raise_store_http_exception(exc)
         return job.to_dict()
 
     @app.get("/jobs/{job_id}")
@@ -402,8 +648,15 @@ def create_app(
         return job.to_worker_dict()
 
     @app.get("/worker/jobs/{job_id}/input")
-    def get_worker_input(job_id: str, _auth: None = Depends(require_worker_auth)):
-        job = store.get(job_id)
+    def get_worker_input(
+        job_id: str,
+        worker_id: str = Query(...),
+        _auth: None = Depends(require_worker_auth),
+    ):
+        try:
+            job = store.assert_worker_owns(job_id, worker_id)
+        except InvalidJobTransition as exc:
+            raise_store_http_exception(exc)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
         input_path = Path(job.input_path)
@@ -419,9 +672,13 @@ def create_app(
     def submit_worker_result(
         job_id: str,
         file: UploadFile = File(...),
+        worker_id: str = Query(...),
         _auth: None = Depends(require_worker_auth),
     ):
-        job = store.get(job_id)
+        try:
+            job = store.assert_worker_owns(job_id, worker_id)
+        except InvalidJobTransition as exc:
+            raise_store_http_exception(exc)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
         ext = upload_extension(file.filename, file.content_type) or ".png"
@@ -432,18 +689,47 @@ def create_app(
         except (ValueError, UploadTooLarge, InvalidImageUpload) as exc:
             result_path.unlink(missing_ok=True)
             raise_upload_http_exception(exc)
-        completed = store.complete(job_id, str(result_path), file.content_type or media_type_for_path(str(result_path)))
+        try:
+            completed = store.complete(
+                job_id,
+                str(result_path),
+                file.content_type or media_type_for_path(str(result_path)),
+                worker_id,
+            )
+        except (InvalidJobTransition, RelayCapacityExceeded) as exc:
+            result_path.unlink(missing_ok=True)
+            raise_store_http_exception(exc)
         return completed.to_dict()
+
+    @app.post("/worker/jobs/{job_id}/heartbeat")
+    def heartbeat_worker_job(
+        job_id: str,
+        worker_id: str = Query(...),
+        _auth: None = Depends(require_worker_auth),
+    ):
+        try:
+            job = store.heartbeat(job_id, worker_id)
+        except InvalidJobTransition as exc:
+            raise_store_http_exception(exc)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        return job.to_worker_dict()
 
     @app.post("/worker/jobs/{job_id}/failed")
     def submit_worker_failure(
         job_id: str,
         payload: dict,
+        worker_id: str = Query(...),
         _auth: None = Depends(require_worker_auth),
     ):
         status_code = int(payload.get("status_code") or 500)
+        if status_code < 400 or status_code > 599:
+            status_code = 500
         error = str(payload.get("error") or "Worker failed.")
-        job = store.fail(job_id, error, status_code=status_code)
+        try:
+            job = store.fail(job_id, error, worker_id, status_code=status_code)
+        except InvalidJobTransition as exc:
+            raise_store_http_exception(exc)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
         return job.to_dict()
@@ -460,17 +746,36 @@ def parse_args():
     parser.add_argument("--worker-token", default=os.environ.get("BALLOONTRANS_RELAY_WORKER_TOKEN", ""))
     parser.add_argument("--result-ttl", default=3600, type=int)
     parser.add_argument("--max-upload-mb", default=50, type=int)
+    parser.add_argument("--claim-lease-seconds", default=1800, type=int)
+    parser.add_argument("--max-jobs", default=1000, type=int)
+    parser.add_argument("--max-storage-mb", default=2048, type=int)
+    parser.add_argument(
+        "--allow-unauthenticated-public",
+        action="store_true",
+        help="allow a public bind without client/worker tokens (unsafe)",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    require_auth_for_public_bind(
+        args.host,
+        {
+            'client': args.api_token,
+            'worker': args.worker_token or args.api_token,
+        },
+        allow_unauthenticated_public=args.allow_unauthenticated_public,
+    )
     app = create_app(
         args.storage_dir,
         args.api_token,
         args.worker_token,
         args.result_ttl,
         max_upload_bytes=args.max_upload_mb * 1024 * 1024,
+        claim_lease_seconds=args.claim_lease_seconds,
+        max_jobs=args.max_jobs,
+        max_storage_bytes=args.max_storage_mb * 1024 * 1024,
     )
     uvicorn.run(app, host=args.host, port=args.port)
 

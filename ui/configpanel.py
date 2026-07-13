@@ -427,7 +427,7 @@ class ConfigPanel(Widget):
         generalConfigPanel.addTextLabel(label_startup)
         self.open_on_startup_checker, _ = generalConfigPanel.addCheckBox(self.tr('Reopen last project on startup'))
         self.open_on_startup_checker.stateChanged.connect(self.on_open_onstartup_changed)
-        self.check_update_on_startup_checker, _ = generalConfigPanel.addCheckBox(self.tr('Check update on startup'))
+        self.check_update_on_startup_checker, _ = generalConfigPanel.addCheckBox(self.tr('Check upstream release on startup'))
         self.check_update_on_startup_checker.stateChanged.connect(self.on_check_update_onstartup_changed)
 
         update_status_widget = QWidget()
@@ -436,7 +436,7 @@ class ConfigPanel(Widget):
         update_status_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.check_update_btn = QPushButton(parent=self)
         self.check_update_btn.setFixedWidth(160)
-        self.check_update_btn.setText(self.tr('Check update'))
+        self.check_update_btn.setText(self.tr('Check upstream release'))
         self.check_update_btn.clicked.connect(self.check_update)
         self.current_version_label = ConfigTextLabel(
             self.tr('Current version: ') + APP_VERSION,
@@ -444,7 +444,7 @@ class ConfigPanel(Widget):
             QFont.Weight.Normal,
         )
         self.latest_version_label = ConfigTextLabel(
-            self.tr('Latest version: ') + self.tr('Not checked'),
+            self.tr('Latest upstream version: ') + self.tr('Not checked'),
             CONFIG_FONTSIZE_CONTENT,
             QFont.Weight.Normal,
         )

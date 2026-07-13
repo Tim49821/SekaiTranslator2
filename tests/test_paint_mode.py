@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -20,9 +21,18 @@ except ImportError:
 
 from ui.canvas import Canvas
 from ui.drawing_commands import InpaintHardResetCommand, InpaintUndoCommand, StrokeItemUndoCommand
-from ui.drawingpanel import DrawingPanel
+from ui.drawingpanel import DrawingPanel, _expand_context_rect
+from ui.funcmaps import (
+    MASKSEG_EXISTING_MASK,
+    MASKSEG_METHOD_1,
+    MASKSEG_METHOD_2,
+    MASKSEG_METHOD_3,
+    get_maskseg_method,
+)
 from ui.image_edit import DrawingLayer, ImageEditMode, PenShape, StrokeImgItem
+from ui.module_manager import InpaintThread, ModuleManager
 from utils.config import DrawPanelConfig, pcfg
+from utils.textblock_mask import canny_flood_natural, existing_mask
 
 
 def ensure_app():
@@ -99,6 +109,203 @@ class PaintModeTest(unittest.TestCase):
         self.assertIsNone(rect)
         self.assertIsNone(mask)
         self.assertIsNone(qimg)
+
+    def test_method3_combo_keeps_existing_mask_config_compatible(self):
+        canvas = Canvas()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        combo = panel.rectPanel.methodComboBox
+
+        self.assertEqual(
+            [combo.itemData(index) for index in range(combo.count())],
+            [MASKSEG_METHOD_1, MASKSEG_METHOD_2, MASKSEG_METHOD_3, MASKSEG_EXISTING_MASK],
+        )
+        panel.set_config(DrawPanelConfig(rectool_method=MASKSEG_EXISTING_MASK))
+        self.assertEqual(combo.currentData(), MASKSEG_EXISTING_MASK)
+        self.assertIs(get_maskseg_method(MASKSEG_EXISTING_MASK), existing_mask)
+
+        panel.set_config(DrawPanelConfig(rectool_method=MASKSEG_METHOD_3))
+        self.assertEqual(combo.currentData(), MASKSEG_METHOD_3)
+        self.assertIs(get_maskseg_method(MASKSEG_METHOD_3), canny_flood_natural)
+
+    def test_method3_bypasses_flat_fill_and_expands_model_context(self):
+        canvas = Canvas()
+        canvas.imgtrans_proj = FakeTextProject()
+        yy, xx = np.indices(canvas.imgtrans_proj.inpainted_array.shape[:2])
+        canvas.imgtrans_proj.inpainted_array[..., 0] = xx % 251
+        canvas.imgtrans_proj.inpainted_array[..., 1] = yy % 251
+        canvas.imgtrans_proj.inpainted_array[..., 2] = (xx + yy) % 251
+        original_page = canvas.imgtrans_proj.inpainted_array.copy()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+
+        selected_rect = [100, 60, 140, 90]
+        mask = np.zeros((30, 40), dtype=np.uint8)
+        mask[10:20, 12:28] = 255
+        calls = []
+        panel.runInpaint = lambda inpaint_dict=None: calls.append(inpaint_dict)
+        inpaint_dict = {
+            "img": original_page[60:90, 100:140].copy(),
+            "mask": mask,
+            "inpaint_rect": selected_rect,
+            "need_inpaint": False,
+            "bground_rgb": np.array([255, 255, 255], dtype=np.uint8),
+            "ballon_mask": np.full(mask.shape, 255, dtype=np.uint8),
+            "force_inpaint": True,
+            "context_ratio": 2.5,
+            "feather_radius": 2,
+        }
+
+        panel.inpaintRect(inpaint_dict)
+
+        self.assertEqual(len(calls), 1)
+        prepared = calls[0]
+        ex1, ey1, ex2, ey2 = prepared["inpaint_rect"]
+        self.assertLess(ex1, selected_rect[0])
+        self.assertLess(ey1, selected_rect[1])
+        self.assertGreater(ex2, selected_rect[2])
+        self.assertGreater(ey2, selected_rect[3])
+        self.assertEqual(prepared["img"].shape[:2], prepared["mask"].shape)
+        offset_x = selected_rect[0] - ex1
+        offset_y = selected_rect[1] - ey1
+        np.testing.assert_array_equal(
+            prepared["mask"][offset_y:offset_y + mask.shape[0], offset_x:offset_x + mask.shape[1]],
+            mask,
+        )
+        self.assertEqual(np.count_nonzero(prepared["mask"]), np.count_nonzero(mask))
+        np.testing.assert_array_equal(canvas.imgtrans_proj.inpainted_array, original_page)
+
+        edge_rect = _expand_context_rect([0, 0, 40, 30], 300, 200, 2.5)
+        self.assertEqual(edge_rect[:2], [0, 0])
+        self.assertGreater(edge_rect[2], 40)
+        self.assertGreater(edge_rect[3], 30)
+
+    def test_method3_finished_result_uses_soft_edge_and_tracks_effective_mask(self):
+        canvas = Canvas()
+        canvas.editor_index = 0
+        canvas.imgtrans_proj = FakeTextProject()
+        canvas.updateCanvas()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        panel.paint_busy = True
+        canvas.paint_busy = True
+
+        rect = [20, 20, 40, 40]
+        original = np.zeros((20, 20, 3), dtype=np.uint8)
+        candidate = np.full_like(original, 200)
+        mask = np.zeros((20, 20), dtype=np.uint8)
+        mask[7:13, 7:13] = 255
+        panel.on_inpaint_finished({
+            "img": original,
+            "inpainted": candidate,
+            "mask": mask,
+            "inpaint_rect": rect,
+            "feather_radius": 2,
+        })
+
+        result = canvas.imgtrans_proj.inpainted_array[20:40, 20:40]
+        stored_mask = canvas.imgtrans_proj.mask_array[20:40, 20:40]
+        self.assertTrue(np.all(result[mask > 0] == 200))
+        self.assertTrue(np.all(result[stored_mask == 0] == 0))
+        margin = (stored_mask > 0) & (mask == 0)
+        margin_values = result[..., 0][margin]
+        self.assertTrue(np.any((margin_values > 0) & (margin_values < 200)))
+
+    def test_canvas_inpaint_prepare_failure_emits_failure_signal(self):
+        manager = ModuleManager(None)
+        failures = []
+        callbacks = {}
+        manager.inpaint_thread = SimpleNamespace(
+            inpainting=False,
+            inpaint_failed=SimpleNamespace(emit=lambda: failures.append(True)),
+        )
+        manager._prepare_modules_then = lambda required, on_success, on_failure=None: callbacks.update(
+            success=on_success,
+            failure=on_failure,
+        )
+
+        manager.canvas_inpaint({"img": np.zeros((2, 2, 3)), "mask": np.zeros((2, 2))})
+        callbacks["failure"]()
+
+        self.assertEqual(failures, [True])
+        self.assertFalse(manager.run_canvas_inpaint)
+
+    def test_inpaint_thread_preserves_method3_blend_metadata(self):
+        calls = []
+        finished = []
+
+        class FakeInpainter:
+            def inpaint(self, img, mask):
+                calls.append((img.copy(), mask.copy()))
+                return np.full_like(img, 123)
+
+        fake_thread = SimpleNamespace(
+            inpainter=FakeInpainter(),
+            inpainting=False,
+            stop_requested=False,
+            finish_inpaint=SimpleNamespace(emit=lambda payload: finished.append(payload)),
+            inpaint_failed=SimpleNamespace(emit=lambda: None),
+            tr=lambda text: text,
+        )
+        img = np.zeros((6, 6, 3), dtype=np.uint8)
+        mask = np.zeros((6, 6), dtype=np.uint8)
+        mask[2:4, 2:4] = 255
+
+        InpaintThread._inpaint(
+            fake_thread,
+            img,
+            mask,
+            inpaint_rect=[0, 0, 6, 6],
+            force_inpaint=True,
+            feather_radius=2,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(finished), 1)
+        self.assertTrue(finished[0]["force_inpaint"])
+        self.assertEqual(finished[0]["feather_radius"], 2)
+        self.assertTrue(np.all(finished[0]["inpainted"] == 123))
+
+    def test_page_change_invalidates_pending_canvas_inpaint(self):
+        manager = ModuleManager(None)
+        callbacks = {}
+        starts = []
+        manager.inpaint_thread = SimpleNamespace(
+            inpainting=False,
+            inpaint_failed=SimpleNamespace(emit=lambda: None),
+            requestStop=lambda: None,
+        )
+        manager.imgtrans_thread = SimpleNamespace(isRunning=lambda: False)
+        manager.inpaint = lambda **kwargs: starts.append(kwargs)
+        manager._prepare_modules_then = lambda required, on_success, on_failure=None: callbacks.update(
+            success=on_success,
+            failure=on_failure,
+        )
+
+        manager.canvas_inpaint({"img": np.zeros((2, 2, 3)), "mask": np.zeros((2, 2))})
+        manager.handle_page_changed()
+        callbacks["success"]()
+
+        self.assertEqual(starts, [])
+        self.assertFalse(manager.run_canvas_inpaint)
+
+    def test_page_change_discards_queued_result_from_previous_page(self):
+        manager = ModuleManager(None)
+        emitted = []
+        manager.canvas_inpaint_finished.connect(lambda payload: emitted.append(payload))
+        manager.inpaint_thread = SimpleNamespace(
+            inpainting=False,
+            requestStop=lambda: None,
+        )
+        manager.imgtrans_thread = SimpleNamespace(isRunning=lambda: False)
+        manager._canvas_inpaint_request_id = 7
+        manager.run_canvas_inpaint = True
+
+        manager.handle_page_changed()
+        manager.on_finish_inpaint({
+            "inpainted": np.zeros((2, 2, 3), dtype=np.uint8),
+            "_canvas_inpaint_request_id": 7,
+        })
+
+        self.assertEqual(emitted, [])
+        self.assertFalse(manager.run_canvas_inpaint)
 
     def test_stroke_clip_returns_mask_for_drawn_stroke(self):
         pen = QPen(QColor(0, 0, 0, 255), 8)

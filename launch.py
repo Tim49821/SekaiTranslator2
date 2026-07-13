@@ -8,7 +8,8 @@ import subprocess
 import shlex
 from platform import platform
 
-BRANCH = 'dev'
+UPDATE_REMOTE = os.environ.get('BALLOONTRANS_UPDATE_REMOTE', 'origin')
+BRANCH = os.environ.get('BALLOONTRANS_UPDATE_BRANCH', 'main')
 VERSION = '1.4.0'
 
 python = sys.executable
@@ -47,6 +48,16 @@ parser.add_argument("--port", default=8000, type=int, help='port for --headless-
 parser.add_argument("--api-token", default=os.environ.get('BALLOONTRANS_API_TOKEN', ''), help='optional bearer token for headless server API requests')
 parser.add_argument("--job-result-ttl", default=3600, type=int, help='seconds to keep completed headless server job results')
 parser.add_argument("--max-upload-mb", default=50, type=int, help='maximum image upload size for --headless-server')
+parser.add_argument(
+    "--allow-unauthenticated-public",
+    action='store_true',
+    help='allow --headless-server to bind publicly without --api-token (unsafe)',
+)
+parser.add_argument(
+    "--allow-package-install",
+    action='store_true',
+    help='allow headless modes to install missing module packages into the active Python environment',
+)
 parser.add_argument("--exec_dirs", default='', help='translation queue (project directories) separated by comma')
 parser.add_argument("--ldpi", default=None, type=float, help='logical dots perinch')
 parser.add_argument("--export-translation-txt", action='store_true', help='save translation to txt file once RUN completed')
@@ -147,6 +158,29 @@ def commit_hash():
     return stored_commit_hash
 
 
+def git_ahead_behind(local_ref: str, remote_ref: str):
+    """Return commits unique to local and remote refs, respectively."""
+    ahead = int(run([git, "rev-list", "--count", f"{remote_ref}..{local_ref}"]).strip())
+    behind = int(run([git, "rev-list", "--count", f"{local_ref}..{remote_ref}"]).strip())
+    return ahead, behind
+
+
+def source_update_action(ahead: int, behind: int) -> str:
+    if behind > 0 and ahead == 0:
+        return 'fast_forward'
+    if ahead > 0 and behind > 0:
+        return 'diverged'
+    if ahead > 0:
+        return 'ahead'
+    return 'up_to_date'
+
+
+def apply_package_install_policy(config, headless: bool, allow_package_install: bool) -> bool:
+    if headless:
+        config.package_manager.auto_install_missing_packages = bool(allow_package_install)
+    return config.package_manager.auto_install_missing_packages
+
+
 BT = None
 APP = None
 SERVER = None
@@ -177,7 +211,7 @@ def main():
     print('Python version: ', sys.version)
     print('Python executable: ', sys.executable)
     print(f'Version: {VERSION}')
-    print(f'Branch: {BRANCH}')
+    print(f'Update source: {UPDATE_REMOTE}/{BRANCH}')
     print(f"Commit hash: {commit}")
 
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -195,15 +229,26 @@ def main():
             print('Checking for updates...')
             try:
                 current_commit = commit_hash()
-                run([git, "fetch", "origin", BRANCH], desc="Fetching updates from git...", errdesc="Failed to fetch updates.")
-                latest_commit = run([git, "rev-parse", f"origin/{BRANCH}"]).strip()
+                run([git, "fetch", UPDATE_REMOTE, BRANCH], desc="Fetching updates from git...", errdesc="Failed to fetch updates.")
+                remote_ref = f"{UPDATE_REMOTE}/{BRANCH}"
+                latest_commit = run([git, "rev-parse", remote_ref]).strip()
 
                 if current_commit != latest_commit:
-                    print("New updates found. Updating repository...")
-                    run([git, "pull", "origin", BRANCH], desc="Updating repository...", errdesc="Failed to update repository.")
-                    print("Repository updated. Restarting to apply updates...")
-                    restart()
-                    return
+                    ahead, behind = git_ahead_behind("HEAD", remote_ref)
+                    update_action = source_update_action(ahead, behind)
+                    if update_action == 'fast_forward':
+                        print("New updates found. Updating repository...")
+                        run([git, "pull", "--ff-only", UPDATE_REMOTE, BRANCH], desc="Updating repository...", errdesc="Failed to update repository.")
+                        print("Repository updated. Restarting to apply updates...")
+                        restart()
+                        return
+                    if update_action == 'diverged':
+                        print(
+                            f"Local branch and {remote_ref} have diverged "
+                            f"(ahead {ahead}, behind {behind}); skipping automatic update."
+                        )
+                    elif update_action == 'ahead':
+                        print(f"Local branch is ahead of {remote_ref}; no update is required.")
                 else:
                     print("No updates found.")
             except Exception as e:
@@ -229,6 +274,7 @@ def main():
     if args.headless or args.headless_continuous or args.headless_server:
         config.module.load_model_on_demand = True
         config.module.empty_runcache = False
+    apply_package_install_policy(config, shared.is_headless(), args.allow_package_install)
 
     if sys.platform == 'win32':
         import ctypes
@@ -348,6 +394,7 @@ def main():
             args.api_token,
             args.job_result_ttl,
             max_upload_bytes=args.max_upload_mb * 1024 * 1024,
+            allow_unauthenticated_public=args.allow_unauthenticated_public,
         )
     sys.exit(app.exec())
 
