@@ -153,6 +153,11 @@ class ProgressMessageBox(QDialog):
             button_layout.addStretch()
             layout.addLayout(button_layout)
 
+        # A child QDialog without an explicit hidden state is shown automatically
+        # when its parent window is first shown. Progress dialogs must only appear
+        # after show_fitted() (or show()) is requested for an active task.
+        self.hide()
+
     def on_stop_clicked(self):
         self.stop_clicked.emit()
         self.hide()
@@ -170,8 +175,14 @@ class ProgressMessageBox(QDialog):
             self.task_progress_bar.updateProgress(0)
 
     def show_fitted(self):
-        self.setFixedWidth(self.sizeHint().width())
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+        fitted_size = self.sizeHint()
+        self.setFixedWidth(fitted_size.width())
+        self.resize(fitted_size)
         self.show()
+        self.raise_()
 
     def showEvent(self, e: QShowEvent) -> None:
         self.showed.emit()
