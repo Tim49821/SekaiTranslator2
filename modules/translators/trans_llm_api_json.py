@@ -59,6 +59,19 @@ GEMINI_REASONING_EFFORT_OPTIONS = [
     "high",
 ]
 
+
+def apply_google_reasoning_effort(
+    api_args: Dict,
+    provider: str,
+    effort: str,
+) -> None:
+    if (
+        provider == "Google"
+        and effort in GEMINI_REASONING_EFFORT_OPTIONS
+        and effort != "default"
+    ):
+        api_args["reasoning_effort"] = effort
+
 LLM_PROVIDER_DEFAULT_MODELS = {
     "OpenAI": "OAI: gpt-5.2",
     "Google": "GGL: gemini-3.1-pro-preview",
@@ -272,6 +285,15 @@ class LLM_API_Translator(BaseTranslator):
         return self.get_param_value("model")
 
     @property
+    def reasoning_effort(self) -> str:
+        if self.params is None or "reasoning effort" not in self.params:
+            return "default"
+        effort = str(self.get_param_value("reasoning effort")).lower()
+        if effort not in GEMINI_REASONING_EFFORT_OPTIONS:
+            return "default"
+        return effort
+
+    @property
     def override_model(self) -> Optional[str]:
         return self.get_param_value("override model") or None
 
@@ -458,6 +480,11 @@ class LLM_API_Translator(BaseTranslator):
             "top_p": self.top_p,
             "max_tokens": self.max_tokens,
         }
+        apply_google_reasoning_effort(
+            api_args,
+            self.provider,
+            self.reasoning_effort,
+        )
 
         # Determine response format
         if self.provider == "LLM Studio":

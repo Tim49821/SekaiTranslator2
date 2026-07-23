@@ -19,6 +19,7 @@ from ..translators.trans_llm_api_json import (
     GEMINI_REASONING_EFFORT_OPTIONS,
     LLM_PROVIDER_DEFAULT_MODELS,
     LLM_PROVIDER_MODEL_OPTIONS,
+    apply_google_reasoning_effort,
 )
 
 LLM_OCR_PROVIDER_MODEL_OPTIONS = {
@@ -333,6 +334,15 @@ class LLM_OCR(OCRBase):
         return self.get_param_value("model")
 
     @property
+    def reasoning_effort(self) -> str:
+        if self.params is None or "reasoning effort" not in self.params:
+            return "default"
+        effort = str(self.get_param_value("reasoning effort")).lower()
+        if effort not in GEMINI_REASONING_EFFORT_OPTIONS:
+            return "default"
+        return effort
+
+    @property
     def override_model(self) -> Optional[str]:
         return self.get_param_value("override_model") or None
 
@@ -497,11 +507,17 @@ class LLM_OCR(OCRBase):
 
             self.logger.debug(f"OCR request with model: {model_name}")
 
-            response = self.client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                max_tokens=self.max_response_tokens,
+            api_args = {
+                "model": model_name,
+                "messages": messages,
+                "max_tokens": self.max_response_tokens,
+            }
+            apply_google_reasoning_effort(
+                api_args,
+                self.provider,
+                self.reasoning_effort,
             )
+            response = self.client.chat.completions.create(**api_args)
 
             if response.choices and response.choices[0].message.content:
                 full_text = (

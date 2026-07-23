@@ -1,0 +1,114 @@
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from modules.ocr.ocr_llm_api import GoogleLLMOCR
+from modules.translators.trans_llm_api_json import (
+    GoogleLLMTranslator,
+    apply_google_reasoning_effort,
+)
+
+
+def translation_completion():
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content='{"translations":[{"id":1,"translation":"안녕"}]}'
+                )
+            )
+        ],
+        usage=None,
+    )
+
+
+def ocr_completion():
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="こんにちは"))],
+        usage=None,
+    )
+
+
+class GeminiReasoningArgumentTest(unittest.TestCase):
+    def test_ignores_unsupported_reasoning_effort(self):
+        api_args = {}
+
+        apply_google_reasoning_effort(api_args, "Google", "unsupported")
+
+        self.assertEqual(api_args, {})
+
+
+class GeminiTranslatorReasoningTest(unittest.TestCase):
+    def request_mock(self, effort):
+        translator = GoogleLLMTranslator(
+            "日本語",
+            "한국어",
+            raise_unsupported_lang=False,
+            **{
+                "apikey": "test-key",
+                "reasoning effort": effort,
+                "delay": 0,
+            },
+        )
+        create = MagicMock(return_value=translation_completion())
+        translator.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        with (
+            patch.object(translator, "_select_api_key", return_value="test-key"),
+            patch.object(translator, "_initialize_client", return_value=True),
+            patch.object(translator, "_respect_delay"),
+        ):
+            translator._request_translation("translate this")
+        return create
+
+    def test_sends_selected_reasoning_effort(self):
+        create = self.request_mock("high")
+
+        self.assertEqual(create.call_args.kwargs["reasoning_effort"], "high")
+
+    def test_omits_reasoning_effort_for_default(self):
+        create = self.request_mock("default")
+
+        self.assertNotIn("reasoning_effort", create.call_args.kwargs)
+
+    def test_omits_invalid_reasoning_effort(self):
+        create = self.request_mock("unsupported")
+
+        self.assertNotIn("reasoning_effort", create.call_args.kwargs)
+
+
+class GeminiOCRReasoningTest(unittest.TestCase):
+    def request_mock(self, effort):
+        ocr = GoogleLLMOCR(
+            **{
+                "api_key": "test-key",
+                "reasoning effort": effort,
+                "delay": 0,
+            }
+        )
+        create = MagicMock(return_value=ocr_completion())
+        ocr.client = SimpleNamespace(
+            api_key="test-key",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        )
+        with (
+            patch.object(ocr, "_select_api_key", return_value="test-key"),
+            patch.object(ocr, "_respect_delay"),
+        ):
+            self.assertEqual(ocr.ocr("encoded-image"), "こんにちは")
+        return create
+
+    def test_sends_selected_reasoning_effort(self):
+        create = self.request_mock("high")
+
+        self.assertEqual(create.call_args.kwargs["reasoning_effort"], "high")
+
+    def test_omits_reasoning_effort_for_default(self):
+        create = self.request_mock("default")
+
+        self.assertNotIn("reasoning_effort", create.call_args.kwargs)
+
+
+if __name__ == "__main__":
+    unittest.main()
