@@ -258,7 +258,7 @@ def main():
 
     from utils.logger import setup_logging, logger as LOGGER
     from utils.io_utils import find_all_files_recursive
-    from utils.font_loader import add_application_font
+    from utils.font_loader import add_application_font, load_custom_font_families, resolve_custom_font_family
     from utils import config as program_config
 
     from qtpy.QtCore import QTranslator, QLocale, Qt
@@ -334,11 +334,10 @@ def main():
 
     # Fonts
     # Load custom fonts if they exist
+    shared.CUSTOM_FONTS = []
     if osp.exists(PATH_FONTS):
-        for fp in find_all_files_recursive(PATH_FONTS, FONT_EXTS):
-            fnt_idx = add_application_font(fp)
-            if fnt_idx >= 0:
-                shared.CUSTOM_FONTS.append(QFontDatabase.applicationFontFamilies(fnt_idx)[0])
+        font_paths = find_all_files_recursive(PATH_FONTS, FONT_EXTS)
+        shared.CUSTOM_FONTS = load_custom_font_families(font_paths)
 
     if sys.platform == 'win32' and shared.is_headless():
         # font database does not initialise on windows with qpa -offscreen:
@@ -350,11 +349,7 @@ def main():
             for fp in fp_list:
                 fnt_idx = add_application_font(fp)
 
-    if shared.FLAG_QT6:
-        shared.FONT_FAMILIES = set(f for f in QFontDatabase.families())
-    else:
-        fdb = QFontDatabase()
-        shared.FONT_FAMILIES = set(fdb.families())
+    shared.FONT_FAMILIES = set(shared.CUSTOM_FONTS)
 
     app_font = QFont('Microsoft YaHei UI')
     if not app_font.exactMatch() or sys.platform == 'darwin':
@@ -362,8 +357,20 @@ def main():
     app_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
     app_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.NoSubpixelAntialias)
     QGuiApplication.setFont(app_font)
-    shared.DEFAULT_FONT_FAMILY = app_font.family()
     shared.APP_DEFAULT_FONT = app_font.family()
+    custom_default_font = resolve_custom_font_family('', shared.CUSTOM_FONTS)
+    shared.DEFAULT_FONT_FAMILY = custom_default_font or app_font.family()
+    if custom_default_font:
+        config.global_fontformat.font_family = resolve_custom_font_family(
+            config.global_fontformat.font_family,
+            shared.CUSTOM_FONTS,
+        )
+        for text_style in program_config.text_styles:
+            text_style.font_family = resolve_custom_font_family(
+                text_style.font_family,
+                shared.CUSTOM_FONTS,
+            )
+    config.let_show_only_custom_fonts_flag = True
     
     if args.ldpi:
         shared.LDPI = args.ldpi

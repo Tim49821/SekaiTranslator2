@@ -2,12 +2,13 @@ import copy
 import sys
 from typing import List
 
-from qtpy.QtWidgets import QLineEdit, QSizePolicy, QHBoxLayout, QVBoxLayout, QFrame, QFontComboBox, QApplication, QPushButton, QLabel, QGroupBox, QCheckBox, QSlider
+from qtpy.QtWidgets import QLineEdit, QSizePolicy, QHBoxLayout, QVBoxLayout, QFrame, QComboBox, QApplication, QPushButton, QLabel, QGroupBox, QCheckBox, QSlider
 from qtpy.QtCore import Signal, Qt
 from qtpy.QtGui import QFocusEvent, QMouseEvent, QTextCursor, QKeyEvent
 
 from utils import shared
 from utils import config as C
+from utils.font_loader import unique_font_families
 from utils.fontformat import FontFormat, px2pt, LineSpacingType
 from .custom_widget import Widget, ColorPickerLabel, ClickableLabel, CheckableLabel, TextCheckerLabel, AlignmentChecker, QFontChecker, SizeComboBox, SizeControlLabel, NoBorderPushBtn
 from .textitem import TextBlkItem
@@ -271,40 +272,35 @@ class FontSizeBox(QFrame):
         self.applyFontSizeChange(size + btn.step, size, multi_size)
     
 
-class FontFamilyComboBox(QFontComboBox):
+class FontFamilyComboBox(QComboBox):
     param_changed = Signal(str, object)
     def __init__(self, emit_if_focused=True, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.currentFontChanged.connect(self.on_fontfamily_changed)
-        self.lineedit = lineedit = LineEdit(parent=self)
-        lineedit.return_pressed.connect(self.on_return_pressed)
-        self.setLineEdit(lineedit)
+        self.currentTextChanged.connect(self.on_fontfamily_changed)
+        self.setEditable(False)
         self.emit_if_focused = emit_if_focused
-        self.return_pressed = False
         
     def apply_fontfamily(self):
-        ffamily = self.currentFont().family()
-        if ffamily in shared.FONT_FAMILIES:
+        ffamily = self.currentText()
+        if ffamily in shared.CUSTOM_FONTS:
             self.param_changed.emit('font_family', ffamily)
 
-    def update_font_list(self, font_list):
-        self.currentFontChanged.disconnect(self.on_fontfamily_changed)
-        current_font = self.currentFont().family()
+    def update_font_list(self, font_list, preferred_font=None):
+        self.currentTextChanged.disconnect(self.on_fontfamily_changed)
+        current_font = self.currentText()
+        font_list = unique_font_families(font_list)
+        if current_font not in font_list and preferred_font in font_list:
+            current_font = preferred_font
         self.clear()
         self.addItems(font_list)
-        self.addItems([current_font])
-        self.setCurrentText(current_font)
-        self.currentFontChanged.connect(self.on_fontfamily_changed)
+        if current_font in font_list:
+            self.setCurrentText(current_font)
+        elif font_list:
+            self.setCurrentIndex(0)
+        self.currentTextChanged.connect(self.on_fontfamily_changed)
 
-    def on_return_pressed(self):
-        self.return_pressed = True
+    def on_fontfamily_changed(self, _family=''):
         self.apply_fontfamily()
-
-    def on_fontfamily_changed(self):
-        if self.return_pressed:
-            self.return_pressed = False
-        else:
-            self.apply_fontfamily()
 
 
 class FontFormatPanel(Widget):

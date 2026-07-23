@@ -654,6 +654,8 @@ class TextBlkItem(QGraphicsTextItem):
         return fontformat
 
     def set_fontformat(self, ffmat: FontFormat, set_char_format=False, set_stroke_width=True, set_effect=True):
+        from utils.font_loader import resolve_custom_font_family
+
         self.repainting = True
         if self.fontformat.vertical != ffmat.vertical:
             self.setVertical(ffmat.vertical)
@@ -663,7 +665,10 @@ class TextBlkItem(QGraphicsTextItem):
         format = cursor.charFormat()
         font = self.document().defaultFont()
         
-        font.setFamily(ffmat.font_family)
+        resolved_family = resolve_custom_font_family(ffmat.font_family)
+        if resolved_family:
+            ffmat.font_family = resolved_family
+            font.setFamily(resolved_family)
         font.setPointSizeF(ffmat.size_pt)
         font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.NoSubpixelAntialias)
@@ -786,6 +791,11 @@ class TextBlkItem(QGraphicsTextItem):
         self.is_formatting = False
 
     def setFontFamily(self, value: str, repaint_background: bool = True, set_selected: bool = False, restore_cursor: bool = False):
+        from utils.font_loader import resolve_custom_font_family
+
+        value = resolve_custom_font_family(value)
+        if not value:
+            return
         cursor, after_kwargs = self._before_set_ffmt(set_selected, restore_cursor)
         self.layout.relayout_on_changed = False
         self._doc_set_font_family(value, cursor)

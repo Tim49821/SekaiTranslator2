@@ -110,7 +110,7 @@
   "let_family_flag": 0,
   "let_autolayout_flag": true,
   "let_uppercase_flag": true,
-  "let_show_only_custom_fonts_flag": false,
+  "let_show_only_custom_fonts_flag": true,
   "let_textstyle_indep_flag": false,
   "text_styles_path": "config/textstyles/default.json",
   "fsearch_case": false,

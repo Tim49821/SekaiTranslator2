@@ -5,6 +5,7 @@ from typing import Callable, Optional
 
 from . import shared
 from .fontformat import FontFormat
+from .font_loader import resolve_custom_font_family
 from .structures import List, Dict, Config, field, nested_dataclass
 from .logger import logger as LOGGER
 from .io_utils import json_dump_nested_obj, np, serialize_np
@@ -215,7 +216,7 @@ class ProgramConfig(Config):
     let_family_flag: int = 0
     let_autolayout_flag: bool = True
     let_uppercase_flag: bool = True
-    let_show_only_custom_fonts_flag: bool = False
+    let_show_only_custom_fonts_flag: bool = True
     let_textstyle_indep_flag: bool = False
     text_styles_path: str = osp.join(shared.DEFAULT_TEXTSTYLE_DIR, 'default.json')
 
@@ -367,7 +368,10 @@ def load_textstyle_from(p: str, raise_exception = False):
             styles_loaded = []
             for style in style_list:
                 try:
-                    styles_loaded.append(FontFormat(**style))
+                    font_format = FontFormat(**style)
+                    if shared.CUSTOM_FONTS:
+                        font_format.font_family = resolve_custom_font_family(font_format.font_family)
+                    styles_loaded.append(font_format)
                 except Exception as e:
                     LOGGER.warning(f'Skip invalid text style: {style}')
     except UnicodeDecodeError as e:

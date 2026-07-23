@@ -2,9 +2,41 @@ import hashlib
 import shutil
 import tempfile
 from pathlib import Path
+from typing import List
 
 
 FONT_EXTENSIONS = {'.ttf', '.otf', '.ttc', '.pfb'}
+
+
+def unique_font_families(families) -> List[str]:
+    unique = {}
+    for family in families:
+        family = str(family).strip()
+        if family:
+            unique.setdefault(family.casefold(), family)
+    return sorted(unique.values(), key=str.casefold)
+
+
+def resolve_custom_font_family(family: str, families=None) -> str:
+    if families is None:
+        from . import shared
+
+        families = shared.CUSTOM_FONTS
+
+    families = unique_font_families(families)
+    if not families:
+        return ''
+
+    requested = str(family or '').strip().casefold()
+    for available_family in families:
+        if available_family.casefold() == requested:
+            return available_family
+
+    for preferred_family in ('Pretendard Variable', 'Pretendard'):
+        for available_family in families:
+            if available_family.casefold() == preferred_family.casefold():
+                return available_family
+    return families[0]
 
 
 def _clean_font_copy_path(font_path: Path) -> Path:
@@ -28,3 +60,14 @@ def add_application_font(font_path: str) -> int:
         return QFontDatabase.addApplicationFont(str(clean_path))
     except Exception:
         return font_id
+
+
+def load_custom_font_families(font_paths) -> List[str]:
+    from qtpy.QtGui import QFontDatabase
+
+    families = []
+    for font_path in font_paths:
+        font_id = add_application_font(str(font_path))
+        if font_id >= 0:
+            families.extend(QFontDatabase.applicationFontFamilies(font_id))
+    return unique_font_families(families)

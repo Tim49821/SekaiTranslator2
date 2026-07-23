@@ -526,6 +526,8 @@ class ConfigPanel(Widget):
 
         self.let_show_only_custom_fonts, sublock = generalConfigPanel.addCheckBox(self.tr("Show only custom fonts"))
         self.let_show_only_custom_fonts.stateChanged.connect(self.on_show_only_custom_fonts)
+        self.let_show_only_custom_fonts.setChecked(True)
+        sublock.hide()
 
         generalConfigPanel.addTextLabel(label_save)
         self.rst_imgformat_combobox, imsave_sublock = generalConfigPanel.addCombobox(['PNG', 'JPG', 'WEBP', 'JXL'], self.tr('Result image format'))
@@ -679,8 +681,8 @@ class ConfigPanel(Widget):
         pcfg.let_fnteffect_flag = self.let_effect_combox.currentIndex()
 
     def on_show_only_custom_fonts(self):
-        pcfg.let_show_only_custom_fonts_flag = self.let_show_only_custom_fonts.isChecked()
-        self.show_only_custom_font.emit(pcfg.let_show_only_custom_fonts_flag)
+        pcfg.let_show_only_custom_fonts_flag = True
+        self.show_only_custom_font.emit(True)
 
     def focusOnTranslator(self):
         idx0, idx1 = self.trans_sub_block.idx0, self.trans_sub_block.idx1
@@ -736,7 +738,7 @@ class ConfigPanel(Widget):
         self.load_model_checker.setChecked(pcfg.module.load_model_on_demand)
         self.package_auto_install_checker.setChecked(pcfg.package_manager.auto_install_missing_packages)
         self.empty_runcache_checker.setChecked(pcfg.module.empty_runcache)
-        self.let_show_only_custom_fonts.setChecked(pcfg.let_show_only_custom_fonts_flag)
+        self.let_show_only_custom_fonts.setChecked(True)
         none_label = self.tr('None')
         self.huggingface_mirror_combobox.setCurrentText(
             mirror_to_display(pcfg.mirrors.huggingface, none_label=none_label)

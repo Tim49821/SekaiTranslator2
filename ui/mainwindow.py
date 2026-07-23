@@ -408,8 +408,7 @@ class MainWindow(mainwindow_cls):
         self.configPanel.show_only_custom_font.connect(self.on_show_only_custom_font)
         self.textPanel.formatpanel.import_font_clicked.connect(self.import_fonts)
         self.textPanel.formatpanel.open_font_folder_clicked.connect(self.open_fonts_folder)
-        if pcfg.let_show_only_custom_fonts_flag:
-            self.on_show_only_custom_font(True)
+        self.on_show_only_custom_font(True)
 
         if pcfg.imgtrans_paintmode:
             self.applyEditorMode('paint')
@@ -611,11 +610,10 @@ class MainWindow(mainwindow_cls):
             save_text_styles()
 
     def on_show_only_custom_font(self, only_custom: bool):
-        if only_custom:
-            font_list = shared.CUSTOM_FONTS
-        else:
-            font_list = shared.FONT_FAMILIES
-        self.textPanel.formatpanel.familybox.update_font_list(font_list)
+        self.textPanel.formatpanel.familybox.update_font_list(
+            shared.CUSTOM_FONTS,
+            preferred_font=pcfg.global_fontformat.font_family,
+        )
 
     def _source_img_for_page(self, page_index: int):
         try:
@@ -698,7 +696,7 @@ class MainWindow(mainwindow_cls):
 
         if len(imported_families) > 0:
             unique_families = list(dict.fromkeys(imported_families))
-            self.on_show_only_custom_font(pcfg.let_show_only_custom_fonts_flag)
+            self.on_show_only_custom_font(True)
             self.textPanel.formatpanel.familybox.setCurrentText(unique_families[0])
             msg = self.tr("Imported fonts: ") + ', '.join(unique_families)
             if len(skipped_files) > 0:
