@@ -193,7 +193,9 @@ class ImgtransProgressMessageBox(ProgressMessageBox):
     stop_clicked = Signal()
     
     def __init__(self, *args, **kwargs) -> None:
-        super().__init__(None, *args, **kwargs)
+        # This dialog adds its own stop button after the pipeline progress bars.
+        # Disable the base button so a second one is not rendered above them.
+        super().__init__(None, False, *args, **kwargs)
         
         self.detect_bar = TaskProgressBar(self.tr('Detecting: '), True, self)
         self.ocr_bar = TaskProgressBar(self.tr('OCR: '), True, self)

@@ -1,14 +1,25 @@
-from .base import *
+from typing import Dict, List
+
+import requests
+
+from .base import PROXY, BaseTranslator, register_translator
+
+
+PAPAGO_TRANSLATE_URL = 'https://papago.naver.com/api/text/translation'
+PAPAGO_REQUEST_TIMEOUT = 15
+
 
 @register_translator('Papago')
 class PapagoTranslator(BaseTranslator):
 
     concate_text = True
     params: Dict = {'delay': 0.0}
-    papagoVer: str = None
 
-    # https://github.com/zyddnys/manga-image-translator/blob/main/translators/papago.py
     def _setup_translator(self):
+        # Papago's current web API no longer uses the PPG key embedded in a
+        # main.js bundle. Keep setup local so selecting the translator does not
+        # depend on scraping Papago's changing frontend asset names.
+        self.lang_map['Auto'] = 'auto'
         self.lang_map['简体中文'] = 'zh-CN'
         self.lang_map['繁體中文'] = 'zh-TW'
         self.lang_map['日本語'] = 'ja'
@@ -21,38 +32,48 @@ class PapagoTranslator(BaseTranslator):
         self.lang_map['Português'] = 'pt'
         self.lang_map['русский язык'] = 'ru'
         self.lang_map['Español'] = 'es'
+        self.lang_map['Thai'] = 'th'
         self.lang_map['Arabic'] = 'ar'
-        self.lang_map['Malayalam'] = 'ml'
-        self.lang_map['Tamil'] = 'ta'
-        self.lang_map['Hindi'] = 'hi'        
-        
-        if self.papagoVer is None:
-            script = requests.get('https://papago.naver.com', proxies=PROXY)
-            mainJs = re.search(r'\/(main.*\.js)', script.text).group(1)
-            papagoVerData = requests.get('https://papago.naver.com/' + mainJs, proxies=PROXY)
-            papagoVer = re.search(r'"PPG .*,"(v[^"]*)', papagoVerData.text).group(1)
-            self.papagoVer = PapagoTranslator.papagoVer = papagoVer
+        self.lang_map['Hindi'] = 'hi'
 
     def _translate(self, src_list: List[str]) -> List[str]:
-        data = {}
-        data['source'] = self.lang_map[self.lang_source]
-        data['target'] = self.lang_map[self.lang_target]
-        data['text'] = src_list[0]
-        data['honorific'] = "false"
+        if not src_list:
+            return []
 
-        PAPAGO_URL = 'https://papago.naver.com/apis/n2mt/translate'
-        guid = uuid.uuid4()
-        timestamp = int(time.time() * 1000)
-        key = self.papagoVer.encode("utf-8")
-        code = f"{guid}\n{PAPAGO_URL}\n{timestamp}".encode("utf-8")
-        token = base64.b64encode(hmac.new(key, code, "MD5").digest()).decode("utf-8")
-        
-        headers = {
-            "Authorization": f"PPG {guid}:{token}",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Timestamp": str(timestamp),
+        data = {
+            'source': self.lang_map[self.lang_source],
+            'target': self.lang_map[self.lang_target],
+            'text': src_list[0],
+            'dict': 'false',
+            'useGlossary': 'false',
+            'honorific': 'false',
         }
-        resp = requests.post(PAPAGO_URL, data, headers=headers)
-        translations = resp.json()['translatedText']
-    
-        return [translations]
+        headers = {
+            'Accept-Language': 'ko',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        }
+
+        response = requests.post(
+            PAPAGO_TRANSLATE_URL,
+            data=data,
+            headers=headers,
+            proxies=PROXY,
+            timeout=PAPAGO_REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        response_data = response.json()
+        translated_text = (
+            response_data.get('translatedText')
+            if isinstance(response_data, dict)
+            else None
+        )
+        if not isinstance(translated_text, str):
+            error_code = (
+                response_data.get('errorCode')
+                if isinstance(response_data, dict)
+                else None
+            )
+            detail = f' (error code: {error_code})' if error_code else ''
+            raise RuntimeError(f'Papago returned an invalid translation response{detail}.')
+
+        return [translated_text]

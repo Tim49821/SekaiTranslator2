@@ -3,9 +3,9 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QWidget
+from qtpy.QtWidgets import QApplication, QPushButton, QWidget
 
-from ui.custom_widget.message import ProgressMessageBox
+from ui.custom_widget.message import ImgtransProgressMessageBox, ProgressMessageBox
 
 
 def ensure_app():
@@ -16,6 +16,16 @@ def ensure_app():
 
 
 class ProgressMessageBoxTest(unittest.TestCase):
+    def test_imgtrans_progress_dialog_has_one_stop_button(self):
+        app = ensure_app()
+        dialog = ImgtransProgressMessageBox()
+
+        buttons = dialog.findChildren(QPushButton)
+
+        self.assertEqual(buttons, [dialog.stop_button])
+        dialog.close()
+        app.processEvents()
+
     def test_child_progress_dialog_stays_hidden_until_explicitly_shown(self):
         app = ensure_app()
         parent = QWidget()
