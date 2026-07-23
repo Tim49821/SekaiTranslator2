@@ -42,6 +42,7 @@ LLM_PROVIDER_MODEL_OPTIONS = {
     "OpenAI": ["OAI: gpt-5.2", "OAI: gpt-5-mini", "OAI: gpt-5-nano"],
     "Google": [
         "GGL: gemini-3.1-pro-preview",
+        "GGL: gemini-3.5-flash-lite",
         "GGL: gemini-3-flash-preview",
         "GGL: gemini-3.1-flash-lite",
     ],
@@ -49,6 +50,14 @@ LLM_PROVIDER_MODEL_OPTIONS = {
     "OpenRouter": ["LLMS: (override model field)"],
     "LLM Studio": ["LLMS: (override model field)"],
 }
+
+GEMINI_REASONING_EFFORT_OPTIONS = [
+    "default",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+]
 
 LLM_PROVIDER_DEFAULT_MODELS = {
     "OpenAI": "OAI: gpt-5.2",
@@ -670,11 +679,22 @@ def _build_fixed_provider_params(
     description: str,
     model_options: List[str],
     default_model: str,
+    include_reasoning_effort: bool = False,
 ) -> Dict:
     params = deepcopy(LLM_API_Translator.params)
     params.pop("provider", None)
     params["model"]["options"] = model_options
     params["model"]["value"] = default_model
+    if include_reasoning_effort:
+        params["reasoning effort"] = {
+            "type": "selector",
+            "options": list(GEMINI_REASONING_EFFORT_OPTIONS),
+            "value": "default",
+            "description": (
+                "Controls Gemini reasoning depth. "
+                "Default uses the model's native setting."
+            ),
+        }
     params["description"] = description
     return params
 
@@ -710,6 +730,7 @@ class GoogleLLMTranslator(_FixedProviderLLMTranslator):
         LLM_PROVIDER_DESCRIPTIONS[fixed_provider],
         LLM_PROVIDER_MODEL_OPTIONS[fixed_provider],
         LLM_PROVIDER_DEFAULT_MODELS[fixed_provider],
+        True,
     )
 
 

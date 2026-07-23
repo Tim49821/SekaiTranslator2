@@ -19,6 +19,10 @@ from modules.ocr.ocr_llm_api import (
     OpenAILLMOCR,
 )
 from modules.translators.trans_llm_api_json import LLM_PROVIDER_MODEL_OPTIONS
+from modules.translators.trans_llm_api_json import (
+    GoogleLLMTranslator,
+    OpenAILLMTranslator,
+)
 
 
 class DotenvTest(unittest.TestCase):
@@ -104,6 +108,30 @@ class DotenvTest(unittest.TestCase):
         self.assertIn(new_model, LLM_OCR_PROVIDER_MODEL_OPTIONS["Google"])
         self.assertNotIn(old_model, LLM_PROVIDER_MODEL_OPTIONS["Google"])
         self.assertNotIn(old_model, LLM_OCR_PROVIDER_MODEL_OPTIONS["Google"])
+
+    def test_gemini_35_flash_lite_model_is_shared(self):
+        model = "GGL: gemini-3.5-flash-lite"
+
+        self.assertIn(model, LLM_PROVIDER_MODEL_OPTIONS["Google"])
+        self.assertIn(model, LLM_OCR_PROVIDER_MODEL_OPTIONS["Google"])
+
+    def test_reasoning_effort_is_exposed_only_by_google_presets(self):
+        expected = ["default", "minimal", "low", "medium", "high"]
+
+        self.assertEqual(
+            GoogleLLMTranslator.params["reasoning effort"]["options"], expected
+        )
+        self.assertEqual(
+            GoogleLLMOCR.params["reasoning effort"]["options"], expected
+        )
+        self.assertEqual(
+            GoogleLLMTranslator.params["reasoning effort"]["value"], "default"
+        )
+        self.assertEqual(
+            GoogleLLMOCR.params["reasoning effort"]["value"], "default"
+        )
+        self.assertNotIn("reasoning effort", OpenAILLMTranslator.params)
+        self.assertNotIn("reasoning effort", OpenAILLMOCR.params)
 
     def test_provider_specific_env_wins_over_standard_fallback(self):
         with patch.dict(

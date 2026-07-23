@@ -16,6 +16,7 @@ from utils.env import (
     get_llm_single_api_key,
 )
 from ..translators.trans_llm_api_json import (
+    GEMINI_REASONING_EFFORT_OPTIONS,
     LLM_PROVIDER_DEFAULT_MODELS,
     LLM_PROVIDER_MODEL_OPTIONS,
 )
@@ -548,11 +549,22 @@ def _build_fixed_provider_params(
     description: str,
     model_options: List[str],
     default_model: str,
+    include_reasoning_effort: bool = False,
 ) -> Dict:
     params = deepcopy(LLM_OCR.params)
     params.pop("provider", None)
     params["model"]["options"] = model_options
     params["model"]["value"] = default_model
+    if include_reasoning_effort:
+        params["reasoning effort"] = {
+            "type": "selector",
+            "options": list(GEMINI_REASONING_EFFORT_OPTIONS),
+            "value": "default",
+            "description": (
+                "Controls Gemini reasoning depth. "
+                "Default uses the model's native setting."
+            ),
+        }
     params["description"] = description
     return params
 
@@ -588,6 +600,7 @@ class GoogleLLMOCR(_FixedProviderLLMOCR):
         LLM_OCR_PROVIDER_DESCRIPTIONS[fixed_provider],
         LLM_OCR_PROVIDER_MODEL_OPTIONS[fixed_provider],
         LLM_OCR_PROVIDER_DEFAULT_MODELS[fixed_provider],
+        True,
     )
 
 

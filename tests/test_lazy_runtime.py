@@ -47,6 +47,16 @@ class LazyRuntimeTest(unittest.TestCase):
             assert gemma.supported_src_list and gemma.supported_tgt_list
             assert llm_translator.supported_src_list and llm_translator.supported_tgt_list
 
+            expected_efforts = ['default', 'minimal', 'low', 'medium', 'high']
+            llm_google = modules.TRANSLATORS.get('LLM Google')
+            llm_openai = modules.TRANSLATORS.get('LLM OpenAI')
+            ocr_google = modules.OCR.get('LLM OCR Google')
+            ocr_openai = modules.OCR.get('LLM OCR OpenAI')
+            assert llm_google.params['reasoning effort']['options'] == expected_efforts
+            assert ocr_google.params['reasoning effort']['options'] == expected_efforts
+            assert 'reasoning effort' not in llm_openai.params
+            assert 'reasoning effort' not in ocr_openai.params
+
             comic = modules.TEXTDETECTORS.get('comic_text_bubble')
             assert comic.hf_model_repo_id == 'ogkalu/comic-text-and-bubble-detector'
             assert comic.hf_model_download_on_prepare is True

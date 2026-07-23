@@ -55,6 +55,7 @@ DEFAULT_LLM_PROVIDER_MODEL_OPTIONS = {
     'OpenAI': ['OAI: gpt-5.2', 'OAI: gpt-5-mini', 'OAI: gpt-5-nano'],
     'Google': [
         'GGL: gemini-3.1-pro-preview',
+        'GGL: gemini-3.5-flash-lite',
         'GGL: gemini-3-flash-preview',
         'GGL: gemini-3.1-flash-lite',
     ],
@@ -62,6 +63,9 @@ DEFAULT_LLM_PROVIDER_MODEL_OPTIONS = {
     'OpenRouter': ['LLMS: (override model field)'],
     'LLM Studio': ['LLMS: (override model field)'],
 }
+DEFAULT_GEMINI_REASONING_EFFORT_OPTIONS = [
+    'default', 'minimal', 'low', 'medium', 'high',
+]
 DEFAULT_LLM_PROVIDER_DEFAULT_MODELS = {
     'OpenAI': 'OAI: gpt-5.2',
     'Google': 'GGL: gemini-3.1-pro-preview',
@@ -479,7 +483,7 @@ class SafeEval:
                     value = self.visit(kw.value)
                     not_supported = [] if value is UNKNOWN else value
             return _device_selector(not_supported)
-        if func_name == '_build_fixed_provider_params' and len(args) == 3:
+        if func_name == '_build_fixed_provider_params' and len(args) in {3, 4}:
             base_params = self.env.get('LLM_API_Translator_PARAMS') or self.env.get('LLM_OCR_PARAMS')
             if isinstance(base_params, dict):
                 params = deepcopy(base_params)
@@ -487,6 +491,20 @@ class SafeEval:
                 if isinstance(params.get('model'), dict):
                     params['model']['options'] = args[1]
                     params['model']['value'] = args[2]
+                if len(args) == 4 and args[3] is True:
+                    options = self.env.get(
+                        'GEMINI_REASONING_EFFORT_OPTIONS',
+                        DEFAULT_GEMINI_REASONING_EFFORT_OPTIONS,
+                    )
+                    params['reasoning effort'] = {
+                        'type': 'selector',
+                        'options': list(options),
+                        'value': 'default',
+                        'description': (
+                            'Controls Gemini reasoning depth. '
+                            "Default uses the model's native setting."
+                        ),
+                    }
                 params['description'] = args[0]
                 return params
         if func_name in {'deepcopy', 'copy.deepcopy'} and len(args) == 1:
@@ -723,6 +741,9 @@ def _scan_file(path: str, module_type: str) -> List[ModuleSpec]:
         'BF16_SUPPORTED': False,
         'LLM_PROVIDER_MODEL_OPTIONS': deepcopy(DEFAULT_LLM_PROVIDER_MODEL_OPTIONS),
         'LLM_PROVIDER_DEFAULT_MODELS': deepcopy(DEFAULT_LLM_PROVIDER_DEFAULT_MODELS),
+        'GEMINI_REASONING_EFFORT_OPTIONS': deepcopy(
+            DEFAULT_GEMINI_REASONING_EFFORT_OPTIONS
+        ),
         'LLM_OCR_PROVIDER_MODEL_OPTIONS': {
             **deepcopy(DEFAULT_LLM_PROVIDER_MODEL_OPTIONS),
             'Ollama': ['OLLAMA: (override model field)'],
