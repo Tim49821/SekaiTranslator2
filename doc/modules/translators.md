@@ -27,8 +27,9 @@ The following modules are provider-specific presets over the same OpenAI-compati
     *   Models shown in the UI: `OAI: gpt-5.2`, `OAI: gpt-5-mini`, `OAI: gpt-5-nano`
     *   Default endpoint: `https://api.openai.com/v1`
 *   **LLM Google**
-    *   Models shown in the UI: `GGL: gemini-3.1-pro-preview`, `GGL: gemini-3-flash-preview`, `GGL: gemini-3.1-flash-lite`
+    *   Models shown in the UI: `GGL: gemini-3.1-pro-preview`, `GGL: gemini-3.5-flash-lite`, `GGL: gemini-3-flash-preview`, `GGL: gemini-3.1-flash-lite`
     *   Default endpoint: `https://generativelanguage.googleapis.com/v1beta/openai`
+    *   The same Gemini model and reasoning controls are available in `LLM OCR Google`.
 *   **LLM Grok**
     *   Models shown in the UI: `XAI: grok-4`, `XAI: grok-3`, `XAI: grok-3-mini`
     *   Default endpoint: `https://api.x.ai/v1`
@@ -44,6 +45,7 @@ The following modules are provider-specific presets over the same OpenAI-compati
 *   **apikey:** Single API key for the selected provider. If this is empty, the app reads `.env` or environment variables such as `BALLOONTRANS_LLM_OPENAI_API_KEY`, `BALLOONTRANS_LLM_GOOGLE_API_KEY`, `BALLOONTRANS_LLM_GROK_API_KEY`, or `BALLOONTRANS_LLM_OPENROUTER_API_KEY`.
 *   **multiple_keys:** Semicolon-separated API keys. Requests rotate across keys and respect the per-key RPM limit. If this is empty, the app reads `BALLOONTRANS_LLM_<PROVIDER>_API_KEYS`.
 *   **model:** Provider preset model.
+*   **reasoning effort:** Gemini reasoning depth (`default`, `minimal`, `low`, `medium`, or `high`). `default` preserves the selected model's native behavior. Available in the Google translator and OCR presets.
 *   **override model:** Custom model name. This is required for OpenRouter and LLM Studio unless the preset is enough for your endpoint.
 *   **endpoint:** Base URL for the API. Leave blank for provider defaults, except for LLM Studio.
 *   **system_prompt:** System message that defines the translator role and required JSON response.
