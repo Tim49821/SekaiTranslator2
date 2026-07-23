@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +8,14 @@ from modules.translators.trans_llm_api_json import (
     GoogleLLMTranslator,
     apply_google_reasoning_effort,
 )
+
+
+class IsolatedGoogleLLMTranslator(GoogleLLMTranslator):
+    params = deepcopy(GoogleLLMTranslator.params)
+
+
+class IsolatedGoogleLLMOCR(GoogleLLMOCR):
+    params = deepcopy(GoogleLLMOCR.params)
 
 
 def translation_completion():
@@ -40,7 +49,7 @@ class GeminiReasoningArgumentTest(unittest.TestCase):
 
 class GeminiTranslatorReasoningTest(unittest.TestCase):
     def request_mock(self, effort):
-        translator = GoogleLLMTranslator(
+        translator = IsolatedGoogleLLMTranslator(
             "日本語",
             "한국어",
             raise_unsupported_lang=False,
@@ -54,12 +63,14 @@ class GeminiTranslatorReasoningTest(unittest.TestCase):
         translator.client = SimpleNamespace(
             chat=SimpleNamespace(completions=SimpleNamespace(create=create))
         )
-        with (
-            patch.object(translator, "_select_api_key", return_value="test-key"),
-            patch.object(translator, "_initialize_client", return_value=True),
-            patch.object(translator, "_respect_delay"),
+        with patch.object(
+            translator, "_select_api_key", return_value="test-key"
         ):
-            translator._request_translation("translate this")
+            with patch.object(
+                translator, "_initialize_client", return_value=True
+            ):
+                with patch.object(translator, "_respect_delay"):
+                    translator._request_translation("translate this")
         return create
 
     def test_sends_selected_reasoning_effort(self):
@@ -80,7 +91,7 @@ class GeminiTranslatorReasoningTest(unittest.TestCase):
 
 class GeminiOCRReasoningTest(unittest.TestCase):
     def request_mock(self, effort):
-        ocr = GoogleLLMOCR(
+        ocr = IsolatedGoogleLLMOCR(
             **{
                 "api_key": "test-key",
                 "reasoning effort": effort,
@@ -92,11 +103,9 @@ class GeminiOCRReasoningTest(unittest.TestCase):
             api_key="test-key",
             chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
         )
-        with (
-            patch.object(ocr, "_select_api_key", return_value="test-key"),
-            patch.object(ocr, "_respect_delay"),
-        ):
-            self.assertEqual(ocr.ocr("encoded-image"), "こんにちは")
+        with patch.object(ocr, "_select_api_key", return_value="test-key"):
+            with patch.object(ocr, "_respect_delay"):
+                self.assertEqual(ocr.ocr("encoded-image"), "こんにちは")
         return create
 
     def test_sends_selected_reasoning_effort(self):
