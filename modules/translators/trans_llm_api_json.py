@@ -41,6 +41,7 @@ class TranslationResponse(BaseModel):
 LLM_PROVIDER_MODEL_OPTIONS = {
     "OpenAI": ["OAI: gpt-5.2", "OAI: gpt-5-mini", "OAI: gpt-5-nano"],
     "Google": [
+        "GGL: gemini-3.6-flash",
         "GGL: gemini-3.1-pro-preview",
         "GGL: gemini-3.5-flash-lite",
         "GGL: gemini-3-flash-preview",

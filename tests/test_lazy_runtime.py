@@ -56,6 +56,9 @@ class LazyRuntimeTest(unittest.TestCase):
             assert ocr_google.params['reasoning effort']['options'] == expected_efforts
             assert 'reasoning effort' not in llm_openai.params
             assert 'reasoning effort' not in ocr_openai.params
+            gemini_36 = 'GGL: gemini-3.6-flash'
+            assert gemini_36 in llm_google.params['model']['options']
+            assert gemini_36 in ocr_google.params['model']['options']
 
             comic = modules.TEXTDETECTORS.get('comic_text_bubble')
             assert comic.hf_model_repo_id == 'ogkalu/comic-text-and-bubble-detector'

@@ -18,7 +18,10 @@ from modules.ocr.ocr_llm_api import (
     LLM_OCR_PROVIDER_MODEL_OPTIONS,
     OpenAILLMOCR,
 )
-from modules.translators.trans_llm_api_json import LLM_PROVIDER_MODEL_OPTIONS
+from modules.translators.trans_llm_api_json import (
+    LLM_PROVIDER_DEFAULT_MODELS,
+    LLM_PROVIDER_MODEL_OPTIONS,
+)
 from modules.translators.trans_llm_api_json import (
     GoogleLLMTranslator,
     OpenAILLMTranslator,
@@ -114,6 +117,16 @@ class DotenvTest(unittest.TestCase):
 
         self.assertIn(model, LLM_PROVIDER_MODEL_OPTIONS["Google"])
         self.assertIn(model, LLM_OCR_PROVIDER_MODEL_OPTIONS["Google"])
+
+    def test_gemini_36_flash_model_is_shared(self):
+        model = "GGL: gemini-3.6-flash"
+
+        self.assertIn(model, LLM_PROVIDER_MODEL_OPTIONS["Google"])
+        self.assertIn(model, LLM_OCR_PROVIDER_MODEL_OPTIONS["Google"])
+        self.assertEqual(
+            LLM_PROVIDER_DEFAULT_MODELS["Google"],
+            "GGL: gemini-3.1-pro-preview",
+        )
 
     def test_reasoning_effort_is_exposed_only_by_google_presets(self):
         expected = ["default", "minimal", "low", "medium", "high"]
