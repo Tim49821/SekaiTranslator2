@@ -14,3 +14,4 @@ config/config.local.json.tmp
 .env.headless
 data/models/
 data/libs/
+.worktrees/
