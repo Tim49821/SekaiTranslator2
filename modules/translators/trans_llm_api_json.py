@@ -10,7 +10,12 @@ import openai
 from pydantic import BaseModel, Field, ValidationError
 
 from .base import BaseTranslator, register_translator
-from utils.env import get_llm_multiple_api_keys, get_llm_single_api_key
+from utils.env import (
+    LLM_API_KEY_TIERS,
+    get_llm_api_key_pool,
+    normalize_llm_api_key_tier,
+    parse_llm_api_keys,
+)
 
 
 class InvalidNumTranslations(Exception):
@@ -105,14 +110,38 @@ class LLM_API_Translator(BaseTranslator):
             "value": "OpenAI",
             "description": "Select the LLM provider.",
         },
+        "api_key_tier": {
+            "type": "selector",
+            "options": list(LLM_API_KEY_TIERS),
+            "value": "Free",
+            "description": "Choose which API key pool this translator uses.",
+        },
+        "free_api_keys": {
+            "type": "editor",
+            "value": "",
+            "description": (
+                "Free API keys separated by semicolons or newlines. "
+                "Leave empty to use .env/environment variables."
+            ),
+        },
+        "paid_api_keys": {
+            "type": "editor",
+            "value": "",
+            "description": (
+                "Paid API keys separated by semicolons or newlines. "
+                "Leave empty to use .env/environment variables."
+            ),
+        },
         "apikey": {
             "value": "",
-            "description": "Single API key. Leave empty to use .env/environment variables for the selected provider.",
+            "hidden": True,
+            "description": "Legacy single API key, treated as Free.",
         },
         "multiple_keys": {
             "type": "editor",
             "value": "",
-            "description": "API keys separated by semicolons (;). Leave empty to use .env/environment variables.",
+            "hidden": True,
+            "description": "Legacy API keys, treated as Free.",
         },
         "model": {
             "type": "selector",
@@ -272,19 +301,40 @@ class LLM_API_Translator(BaseTranslator):
         return self.get_param_value("provider")
 
     @property
+    def api_key_tier(self) -> str:
+        return normalize_llm_api_key_tier(
+            self.get_param_value("api_key_tier")
+        )
+
+    @property
+    def active_api_keys(self) -> List[str]:
+        param_key = f"{self.api_key_tier.lower()}_api_keys"
+        configured_keys = parse_llm_api_keys(
+            self.get_param_value(param_key)
+        )
+        if configured_keys:
+            return configured_keys
+        if self.api_key_tier == "Free":
+            legacy_keys = parse_llm_api_keys(
+                ";".join(
+                    (
+                        self.get_param_value("apikey"),
+                        self.get_param_value("multiple_keys"),
+                    )
+                )
+            )
+            if legacy_keys:
+                return legacy_keys
+        return get_llm_api_key_pool(self.provider, self.api_key_tier)
+
+    @property
     def apikey(self) -> str:
-        return self.get_param_value("apikey") or get_llm_single_api_key(self.provider)
+        api_keys = self.active_api_keys
+        return api_keys[0] if api_keys else ""
 
     @property
     def multiple_keys_list(self) -> List[str]:
-        keys_str = self.get_param_value("multiple_keys") or get_llm_multiple_api_keys(self.provider)
-        if not isinstance(keys_str, str):
-            return []
-        return [
-            key.strip()
-            for key in keys_str.strip().replace("\n", ";").split(";")
-            if key.strip()
-        ]
+        return self.active_api_keys
 
     @property
     def model(self) -> str:
@@ -422,21 +472,9 @@ class LLM_API_Translator(BaseTranslator):
         return True
 
     def _select_api_key(self) -> Optional[str]:
-        api_keys = self.multiple_keys_list
-        single_key = self.apikey
-        if not api_keys and not single_key:
-            self.logger.error("No API keys provided in parameters.")
-            return None
-
+        api_keys = self.active_api_keys
         if not api_keys:
-            if self._respect_key_limit(single_key):
-                now = time.time()
-                count, start_time = self.key_usage.get(single_key, (0, now))
-                if now - start_time >= 60:
-                    count = 0
-                    start_time = now
-                self.key_usage[single_key] = (count + 1, start_time)
-                return single_key
+            self.logger.error("No API keys provided in parameters.")
             return None
 
         start_index = self.current_key_index
@@ -708,8 +746,16 @@ class LLM_API_Translator(BaseTranslator):
     def updateParam(self, param_key: str, param_content):
         super().updateParam(param_key, param_content)
 
-        if param_key in ["proxy", "multiple_keys", "apikey", "provider", "endpoint"]:
+        pool_params = [
+            "api_key_tier",
+            "free_api_keys",
+            "paid_api_keys",
+            "provider",
+        ]
+        if param_key in ["proxy", "endpoint", *pool_params]:
             self.client = None
+        if param_key in pool_params:
+            self.current_key_index = 0
 
 
 def _build_fixed_provider_params(
