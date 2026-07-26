@@ -6,8 +6,10 @@ import unittest
 from unittest.mock import patch
 
 from utils.env import (
+    get_llm_api_key_pool,
     get_llm_single_api_key,
     load_dotenv,
+    parse_llm_api_keys,
     parse_dotenv,
     persist_llm_api_keys_from_config,
     sanitize_llm_api_keys,
@@ -29,6 +31,52 @@ from modules.translators.trans_llm_api_json import (
 
 
 class DotenvTest(unittest.TestCase):
+    def test_tier_pools_are_independent_and_deduplicated(self):
+        env = {
+            "BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS": "free-a; free-b\nfree-a",
+            "BALLOONTRANS_LLM_OPENAI_PAID_API_KEYS": "paid-a;paid-b",
+            "BALLOONTRANS_LLM_OCR_OPENAI_FREE_API_KEYS": "ocr-free",
+        }
+
+        with patch("utils.env.load_dotenv"), patch.dict(
+            os.environ, env, clear=True
+        ):
+            self.assertEqual(
+                get_llm_api_key_pool("OpenAI", "Free"),
+                ["free-a", "free-b"],
+            )
+            self.assertEqual(
+                get_llm_api_key_pool("OpenAI", "Paid"),
+                ["paid-a", "paid-b"],
+            )
+            self.assertEqual(
+                get_llm_api_key_pool("OpenAI", "Free", for_ocr=True),
+                ["ocr-free"],
+            )
+
+    def test_legacy_keys_form_default_free_pool(self):
+        env = {
+            "BALLOONTRANS_LLM_GOOGLE_API_KEY": "legacy-single",
+            "BALLOONTRANS_LLM_GOOGLE_API_KEYS": (
+                "legacy-a;legacy-single;legacy-b"
+            ),
+        }
+
+        with patch("utils.env.load_dotenv"), patch.dict(
+            os.environ, env, clear=True
+        ):
+            self.assertEqual(
+                get_llm_api_key_pool("Google", "unknown"),
+                ["legacy-single", "legacy-a", "legacy-b"],
+            )
+            self.assertEqual(get_llm_api_key_pool("Google", "Paid"), [])
+
+    def test_key_parser_accepts_newlines_and_ignores_empty_entries(self):
+        self.assertEqual(
+            parse_llm_api_keys(" key-a\n\nkey-b ; key-a ; "),
+            ["key-a", "key-b"],
+        )
+
     def test_load_dotenv_preserves_existing_environment_by_default(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             dotenv_path = os.path.join(temp_dir, ".env")
@@ -51,6 +99,10 @@ class DotenvTest(unittest.TestCase):
                     "apikey": ".",
                     "multiple_keys": "",
                 },
+                "LLM Grok": {
+                    "free_api_keys": "grok-free-a\ngrok-free-b",
+                    "paid_api_keys": "grok-paid",
+                },
                 "LLM Studio": {
                     "apikey": "local-placeholder",
                     "multiple_keys": "",
@@ -59,7 +111,11 @@ class DotenvTest(unittest.TestCase):
             "ocr_params": {
                 "LLM OCR Google": {
                     "api_key": "google-ocr-test-key",
-                    "multiple_keys": "",
+                    "multiple_keys": "google-ocr-key-b",
+                },
+                "LLM OCR OpenAI": {
+                    "free_api_keys": "ocr-free-a;ocr-free-b",
+                    "paid_api_keys": "ocr-paid",
                 }
             },
         }
@@ -78,8 +134,32 @@ class DotenvTest(unittest.TestCase):
             "openai-key-a;openai-key-b",
         )
         self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS"],
+            "openai-test-key;openai-key-a;openai-key-b",
+        )
+        self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_GROK_FREE_API_KEYS"],
+            "grok-free-a;grok-free-b",
+        )
+        self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_GROK_PAID_API_KEYS"],
+            "grok-paid",
+        )
+        self.assertEqual(
             dotenv_values["BALLOONTRANS_LLM_OCR_GOOGLE_API_KEY"],
             "google-ocr-test-key",
+        )
+        self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_OCR_GOOGLE_FREE_API_KEYS"],
+            "google-ocr-test-key;google-ocr-key-b",
+        )
+        self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_OCR_OPENAI_FREE_API_KEYS"],
+            "ocr-free-a;ocr-free-b",
+        )
+        self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_OCR_OPENAI_PAID_API_KEYS"],
+            "ocr-paid",
         )
         self.assertNotIn("BALLOONTRANS_LLM_GOOGLE_API_KEY", dotenv_values)
         self.assertNotIn("BALLOONTRANS_LLM_LLM_STUDIO_API_KEY", dotenv_values)
@@ -87,7 +167,23 @@ class DotenvTest(unittest.TestCase):
         sanitized = sanitize_llm_api_keys(copy.deepcopy(module_cfg))
         self.assertEqual(sanitized["translator_params"]["LLM OpenAI"]["apikey"], "")
         self.assertEqual(sanitized["translator_params"]["LLM OpenAI"]["multiple_keys"], "")
+        self.assertEqual(
+            sanitized["translator_params"]["LLM Grok"]["free_api_keys"],
+            "",
+        )
+        self.assertEqual(
+            sanitized["translator_params"]["LLM Grok"]["paid_api_keys"],
+            "",
+        )
         self.assertEqual(sanitized["ocr_params"]["LLM OCR Google"]["api_key"], "")
+        self.assertEqual(
+            sanitized["ocr_params"]["LLM OCR OpenAI"]["free_api_keys"],
+            "",
+        )
+        self.assertEqual(
+            sanitized["ocr_params"]["LLM OCR OpenAI"]["paid_api_keys"],
+            "",
+        )
 
     def test_llm_ocr_uses_translator_model_catalog(self):
         self.assertEqual(
