@@ -278,6 +278,39 @@ class DotenvTest(unittest.TestCase):
             "paid-a",
         )
 
+    def test_dotenv_hydration_does_not_shadow_external_environment_pool(self):
+        module_params = {
+            "LLM OpenAI": {
+                "free_api_keys": {"value": ""},
+                "paid_api_keys": {"value": ""},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = os.path.join(temp_dir, ".env")
+            with open(dotenv_path, "w", encoding="utf8") as f:
+                f.write(
+                    "BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS=file-key\n"
+                )
+
+            with patch.dict(
+                os.environ,
+                {"BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS": "external-key"},
+                clear=True,
+            ):
+                hydrate_llm_api_key_params_from_dotenv(
+                    module_params,
+                    dotenv_path=dotenv_path,
+                )
+                with patch("utils.env.load_dotenv"):
+                    resolved_pool = get_llm_api_key_pool("OpenAI", "Free")
+
+        self.assertEqual(
+            module_params["LLM OpenAI"]["free_api_keys"]["value"],
+            "",
+        )
+        self.assertEqual(resolved_pool, ["external-key"])
+
     def test_llm_ocr_uses_translator_model_catalog(self):
         self.assertEqual(
             LLM_OCR_PROVIDER_MODEL_OPTIONS["OpenAI"],

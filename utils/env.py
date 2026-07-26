@@ -400,6 +400,7 @@ def hydrate_llm_api_key_params_from_dotenv(
     dotenv_values = parse_dotenv(dotenv_path)
     if not dotenv_values:
         return
+    load_dotenv(dotenv_path)
 
     provider_resolver = _ocr_provider if for_ocr else _translator_provider
     for module_name, params in module_params.items():
@@ -421,6 +422,14 @@ def hydrate_llm_api_key_params_from_dotenv(
                 for_ocr=for_ocr,
             )
             if found:
+                effective_found, effective_pool = _pool_from_dotenv_values(
+                    os.environ,
+                    provider,
+                    tier,
+                    for_ocr=for_ocr,
+                )
+                if effective_found and effective_pool != pool:
+                    continue
                 _set_param_value(params, param_key, ";".join(pool))
 
 
