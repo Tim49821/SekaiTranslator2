@@ -27,9 +27,10 @@ The following modules are provider-specific presets over the same OpenAI-compati
     *   Models shown in the UI: `OAI: gpt-5.2`, `OAI: gpt-5-mini`, `OAI: gpt-5-nano`
     *   Default endpoint: `https://api.openai.com/v1`
 *   **LLM Google**
-    *   Models shown in the UI: `GGL: gemini-3.1-pro-preview`, `GGL: gemini-3.5-flash-lite`, `GGL: gemini-3-flash-preview`, `GGL: gemini-3.1-flash-lite`
+    *   Models shown in the UI: `GGL: gemini-3.6-flash`, `GGL: gemini-3.1-pro-preview`, `GGL: gemini-3.5-flash-lite`, `GGL: gemini-3-flash-preview`, `GGL: gemini-3.1-flash-lite`
     *   Default endpoint: `https://generativelanguage.googleapis.com/v1beta/openai`
     *   The same Gemini model and reasoning controls are available in `LLM OCR Google`.
+    *   Requests for `gemini-3.6-flash` and `gemini-3.5-flash-lite` omit the legacy `temperature` and `top_p` fields. Older Gemini models retain the configured sampling values.
 *   **LLM Grok**
     *   Models shown in the UI: `XAI: grok-4`, `XAI: grok-3`, `XAI: grok-3-mini`
     *   Default endpoint: `https://api.x.ai/v1`
@@ -53,7 +54,7 @@ The following modules are provider-specific presets over the same OpenAI-compati
 *   **max requests per minute:** RPM limit for each API key.
 *   **delay:** Global delay in seconds between requests.
 *   **max tokens:** Maximum response tokens.
-*   **temperature / top_p:** Sampling controls.
+*   **temperature / top_p:** Sampling controls. The latest Gemini request formats listed above omit these fields.
 *   **retry attempts / retry timeout:** Retry behavior for transient API failures.
 *   **proxy:** Optional proxy URL.
 
