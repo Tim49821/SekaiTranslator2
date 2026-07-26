@@ -60,6 +60,11 @@ GEMINI_REASONING_EFFORT_OPTIONS = [
     "high",
 ]
 
+GEMINI_MODELS_WITHOUT_SAMPLING_PARAMETERS = {
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+}
+
 
 def apply_google_reasoning_effort(
     api_args: Dict,
@@ -477,10 +482,14 @@ class LLM_API_Translator(BaseTranslator):
         api_args = {
             "model": model_name,
             "messages": messages,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
             "max_tokens": self.max_tokens,
         }
+        if not (
+            self.provider == "Google"
+            and model_name in GEMINI_MODELS_WITHOUT_SAMPLING_PARAMETERS
+        ):
+            api_args["temperature"] = self.temperature
+            api_args["top_p"] = self.top_p
         apply_google_reasoning_effort(
             api_args,
             self.provider,

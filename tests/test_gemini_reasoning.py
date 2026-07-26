@@ -48,13 +48,20 @@ class GeminiReasoningArgumentTest(unittest.TestCase):
 
 
 class GeminiTranslatorReasoningTest(unittest.TestCase):
-    def request_mock(self, effort):
+    def request_mock(
+        self,
+        effort,
+        model="GGL: gemini-3.1-pro-preview",
+        override_model="",
+    ):
         translator = IsolatedGoogleLLMTranslator(
             "日本語",
             "한국어",
             raise_unsupported_lang=False,
             **{
                 "apikey": "test-key",
+                "model": model,
+                "override model": override_model,
                 "reasoning effort": effort,
                 "delay": 0,
             },
@@ -87,6 +94,36 @@ class GeminiTranslatorReasoningTest(unittest.TestCase):
         create = self.request_mock("unsupported")
 
         self.assertNotIn("reasoning_effort", create.call_args.kwargs)
+
+    def test_gemini_36_flash_omits_legacy_sampling_parameters(self):
+        create = self.request_mock("high", model="GGL: gemini-3.6-flash")
+
+        self.assertNotIn("temperature", create.call_args.kwargs)
+        self.assertNotIn("top_p", create.call_args.kwargs)
+        self.assertEqual(create.call_args.kwargs["reasoning_effort"], "high")
+
+    def test_gemini_35_flash_lite_omits_legacy_sampling_parameters(self):
+        create = self.request_mock("default", model="GGL: gemini-3.5-flash-lite")
+
+        self.assertNotIn("temperature", create.call_args.kwargs)
+        self.assertNotIn("top_p", create.call_args.kwargs)
+
+    def test_legacy_gemini_model_keeps_sampling_parameters(self):
+        create = self.request_mock("default", model="GGL: gemini-3.1-pro-preview")
+
+        self.assertEqual(create.call_args.kwargs["temperature"], 0.1)
+        self.assertEqual(create.call_args.kwargs["top_p"], 1.0)
+
+    def test_modern_override_model_omits_legacy_sampling_parameters(self):
+        create = self.request_mock(
+            "default",
+            model="GGL: gemini-3.1-pro-preview",
+            override_model="gemini-3.6-flash",
+        )
+
+        self.assertEqual(create.call_args.kwargs["model"], "gemini-3.6-flash")
+        self.assertNotIn("temperature", create.call_args.kwargs)
+        self.assertNotIn("top_p", create.call_args.kwargs)
 
 
 class GeminiOCRReasoningTest(unittest.TestCase):
