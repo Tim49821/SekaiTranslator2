@@ -9,7 +9,15 @@ from .font_loader import resolve_custom_font_family
 from .structures import List, Dict, Config, field, nested_dataclass
 from .logger import logger as LOGGER
 from .io_utils import json_dump_nested_obj, np, serialize_np
-from .env import load_dotenv, persist_llm_api_keys_from_config, sanitize_llm_api_keys
+from .env import (
+    LLM_FIXED_OCR_PROVIDERS,
+    LLM_FIXED_TRANSLATOR_PROVIDERS,
+    load_dotenv,
+    normalize_llm_api_key_tier,
+    parse_llm_api_keys,
+    persist_llm_api_keys_from_config,
+    sanitize_llm_api_keys,
+)
 
 LLM_MODEL_VALUE_ALIASES = {
     'GGL: gemini-3.1-flash-lite-preview': 'GGL: gemini-3.1-flash-lite',
@@ -66,6 +74,65 @@ def _migrate_llm_model_names(module_cfg: dict):
         model_replacements = LLM_OCR_LEGACY_MODEL_REPLACEMENTS.get(module_name, {})
         if model_value in model_replacements:
             _set_raw_param_value(params, 'model', model_replacements[model_value])
+
+
+def _set_or_add_raw_param_value(params: dict, key: str, value):
+    if key in params:
+        _set_raw_param_value(params, key, value)
+    else:
+        params[key] = value
+
+
+def _migrate_api_key_pool_params(
+    params: dict,
+    legacy_single_key: str,
+):
+    if not isinstance(params, dict):
+        return
+
+    tier = normalize_llm_api_key_tier(
+        _get_raw_param_value(params, "api_key_tier")
+    )
+    _set_or_add_raw_param_value(params, "api_key_tier", tier)
+
+    free_keys = parse_llm_api_keys(
+        _get_raw_param_value(params, "free_api_keys")
+    )
+    if not free_keys:
+        free_keys = parse_llm_api_keys(
+            ";".join(
+                (
+                    _get_raw_param_value(params, legacy_single_key) or "",
+                    _get_raw_param_value(params, "multiple_keys") or "",
+                )
+            )
+        )
+    _set_or_add_raw_param_value(
+        params,
+        "free_api_keys",
+        ";".join(free_keys),
+    )
+
+    paid_keys = parse_llm_api_keys(
+        _get_raw_param_value(params, "paid_api_keys")
+    )
+    _set_or_add_raw_param_value(
+        params,
+        "paid_api_keys",
+        ";".join(paid_keys),
+    )
+
+
+def _migrate_llm_api_key_params(module_cfg: dict):
+    translator_params = module_cfg.get("translator_params", {})
+    for module_name, params in translator_params.items():
+        if module_name in LLM_FIXED_TRANSLATOR_PROVIDERS:
+            _migrate_api_key_pool_params(params, "apikey")
+
+    ocr_params = module_cfg.get("ocr_params", {})
+    for module_name, params in ocr_params.items():
+        if module_name in LLM_FIXED_OCR_PROVIDERS:
+            _migrate_api_key_pool_params(params, "api_key")
 
 
 class RunStatus:
@@ -326,6 +393,7 @@ class ProgramConfig(Config):
                     module_cfg['ocr'] = new_llm_ocr
 
             _migrate_llm_model_names(module_cfg)
+            _migrate_llm_api_key_params(module_cfg)
 
             repl_pairs = {'baidu': 'Baidu', 'caiyun': 'Caiyun', 'chatgpt': 'ChatGPT', 'Deepl': 'DeepL', 'papago': 'Papago'}
             for k, i in repl_pairs.items():

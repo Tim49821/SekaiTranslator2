@@ -298,6 +298,68 @@ class DotenvTest(unittest.TestCase):
             "GGL: gemini-3.1-flash-lite",
         )
 
+    def test_legacy_api_key_params_migrate_to_default_free_pools(self):
+        config_dict = {
+            "module": {
+                "ocr": "LLM OCR Google",
+                "translator": "LLM OpenAI",
+                "translator_params": {
+                    "LLM OpenAI": {
+                        "apikey": "legacy-single",
+                        "multiple_keys": (
+                            "legacy-a;legacy-single;legacy-b"
+                        ),
+                    },
+                },
+                "ocr_params": {
+                    "LLM OCR Google": {
+                        "api_key": "legacy-ocr",
+                        "multiple_keys": "legacy-ocr-b",
+                    },
+                },
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "config.json")
+            dotenv_path = os.path.join(temp_dir, ".env")
+            with open(config_path, "w", encoding="utf8") as f:
+                json.dump(config_dict, f)
+
+            config = ProgramConfig.load(config_path)
+            self.assertTrue(
+                persist_llm_api_keys_from_config(
+                    config.module,
+                    dotenv_path,
+                )
+            )
+            dotenv_values = parse_dotenv(dotenv_path)
+
+        translator_params = config.module.translator_params["LLM OpenAI"]
+        ocr_params = config.module.ocr_params["LLM OCR Google"]
+        self.assertEqual(translator_params["api_key_tier"], "Free")
+        self.assertEqual(
+            translator_params["free_api_keys"],
+            "legacy-single;legacy-a;legacy-b",
+        )
+        self.assertEqual(translator_params["paid_api_keys"], "")
+        self.assertEqual(ocr_params["api_key_tier"], "Free")
+        self.assertEqual(
+            ocr_params["free_api_keys"],
+            "legacy-ocr;legacy-ocr-b",
+        )
+        self.assertEqual(ocr_params["paid_api_keys"], "")
+        self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS"],
+            "legacy-single;legacy-a;legacy-b",
+        )
+        self.assertEqual(
+            dotenv_values[
+                "BALLOONTRANS_LLM_OCR_GOOGLE_FREE_API_KEYS"
+            ],
+            "legacy-ocr;legacy-ocr-b",
+        )
+
     def test_standard_provider_env_is_supported(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "openrouter-standard-key"}, clear=True):
             self.assertEqual(

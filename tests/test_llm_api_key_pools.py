@@ -41,8 +41,20 @@ class LLMTranslatorKeyPoolTest(unittest.TestCase):
 
         self.assertEqual(params["api_key_tier"]["value"], "Free")
         self.assertEqual(params["api_key_tier"]["options"], ["Free", "Paid"])
+        self.assertEqual(
+            params["api_key_tier"]["display_name"],
+            "API key tier",
+        )
         self.assertEqual(params["free_api_keys"]["type"], "editor")
+        self.assertEqual(
+            params["free_api_keys"]["display_name"],
+            "Free API keys",
+        )
         self.assertEqual(params["paid_api_keys"]["type"], "editor")
+        self.assertEqual(
+            params["paid_api_keys"]["display_name"],
+            "Paid API keys",
+        )
 
     def test_translator_rotates_only_selected_pool_and_resets_on_switch(self):
         translator = self.make_translator()
@@ -146,8 +158,20 @@ class LLMOCRKeyPoolTest(unittest.TestCase):
 
         self.assertEqual(params["api_key_tier"]["value"], "Free")
         self.assertEqual(params["api_key_tier"]["options"], ["Free", "Paid"])
+        self.assertEqual(
+            params["api_key_tier"]["display_name"],
+            "API key tier",
+        )
         self.assertEqual(params["free_api_keys"]["type"], "editor")
+        self.assertEqual(
+            params["free_api_keys"]["display_name"],
+            "Free API keys",
+        )
         self.assertEqual(params["paid_api_keys"]["type"], "editor")
+        self.assertEqual(
+            params["paid_api_keys"]["display_name"],
+            "Paid API keys",
+        )
 
     def test_ocr_rotates_only_selected_pool_and_resets_on_switch(self):
         ocr = self.make_ocr()

@@ -114,11 +114,13 @@ class LLM_API_Translator(BaseTranslator):
             "type": "selector",
             "options": list(LLM_API_KEY_TIERS),
             "value": "Free",
+            "display_name": "API key tier",
             "description": "Choose which API key pool this translator uses.",
         },
         "free_api_keys": {
             "type": "editor",
             "value": "",
+            "display_name": "Free API keys",
             "description": (
                 "Free API keys separated by semicolons or newlines. "
                 "Leave empty to use .env/environment variables."
@@ -127,6 +129,7 @@ class LLM_API_Translator(BaseTranslator):
         "paid_api_keys": {
             "type": "editor",
             "value": "",
+            "display_name": "Paid API keys",
             "description": (
                 "Paid API keys separated by semicolons or newlines. "
                 "Leave empty to use .env/environment variables."
