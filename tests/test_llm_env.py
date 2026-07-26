@@ -8,6 +8,7 @@ from unittest.mock import patch
 from utils.env import (
     get_llm_api_key_pool,
     get_llm_single_api_key,
+    hydrate_llm_api_key_params_from_dotenv,
     load_dotenv,
     parse_llm_api_keys,
     parse_dotenv,
@@ -70,6 +71,32 @@ class DotenvTest(unittest.TestCase):
                 ["legacy-single", "legacy-a", "legacy-b"],
             )
             self.assertEqual(get_llm_api_key_pool("Google", "Paid"), [])
+
+    def test_ocr_free_pool_does_not_read_translator_legacy_variables(self):
+        env = {
+            "BALLOONTRANS_LLM_OPENAI_API_KEY": "translator-single",
+            "BALLOONTRANS_LLM_OPENAI_API_KEYS": "translator-a;translator-b",
+        }
+
+        with patch("utils.env.load_dotenv"), patch.dict(
+            os.environ, env, clear=True
+        ):
+            self.assertEqual(
+                get_llm_api_key_pool("OpenAI", "Free", for_ocr=True),
+                [],
+            )
+
+    def test_explicit_empty_tier_pool_blocks_legacy_fallback(self):
+        env = {
+            "BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS": "",
+            "BALLOONTRANS_LLM_OPENAI_API_KEY": "legacy-single",
+            "OPENAI_API_KEY": "standard-single",
+        }
+
+        with patch("utils.env.load_dotenv"), patch.dict(
+            os.environ, env, clear=True
+        ):
+            self.assertEqual(get_llm_api_key_pool("OpenAI", "Free"), [])
 
     def test_key_parser_accepts_newlines_and_ignores_empty_entries(self):
         self.assertEqual(
@@ -183,6 +210,72 @@ class DotenvTest(unittest.TestCase):
         self.assertEqual(
             sanitized["ocr_params"]["LLM OCR OpenAI"]["paid_api_keys"],
             "",
+        )
+
+    def test_explicitly_cleared_pool_replaces_stored_value_with_empty_override(self):
+        module_cfg = {
+            "translator_params": {
+                "LLM OpenAI": {
+                    "free_api_keys": "",
+                    "paid_api_keys": "",
+                    "__api_key_pool_dirty": "free_api_keys",
+                },
+            },
+            "ocr_params": {},
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = os.path.join(temp_dir, ".env")
+            with open(dotenv_path, "w", encoding="utf8") as f:
+                f.write(
+                    "BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS=stale-free\n"
+                    "BALLOONTRANS_LLM_OPENAI_API_KEY=legacy-free\n"
+                )
+
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertTrue(
+                    persist_llm_api_keys_from_config(module_cfg, dotenv_path)
+                )
+                dotenv_values = parse_dotenv(dotenv_path)
+                load_dotenv(dotenv_path, override=True)
+                with patch("utils.env.load_dotenv"):
+                    resolved_pool = get_llm_api_key_pool("OpenAI", "Free")
+
+        self.assertIn("BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS", dotenv_values)
+        self.assertEqual(
+            dotenv_values["BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS"],
+            "",
+        )
+        self.assertEqual(resolved_pool, [])
+
+    def test_dotenv_key_pools_hydrate_visible_editor_fields(self):
+        module_params = {
+            "LLM OpenAI": {
+                "free_api_keys": {"value": ""},
+                "paid_api_keys": {"value": ""},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = os.path.join(temp_dir, ".env")
+            with open(dotenv_path, "w", encoding="utf8") as f:
+                f.write(
+                    "BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS=free-a;free-b\n"
+                    "BALLOONTRANS_LLM_OPENAI_PAID_API_KEYS=paid-a\n"
+                )
+
+            hydrate_llm_api_key_params_from_dotenv(
+                module_params,
+                dotenv_path=dotenv_path,
+            )
+
+        self.assertEqual(
+            module_params["LLM OpenAI"]["free_api_keys"]["value"],
+            "free-a;free-b",
+        )
+        self.assertEqual(
+            module_params["LLM OpenAI"]["paid_api_keys"]["value"],
+            "paid-a",
         )
 
     def test_llm_ocr_uses_translator_model_catalog(self):

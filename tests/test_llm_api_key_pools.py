@@ -21,6 +21,7 @@ class LLMTranslatorKeyPoolTest(unittest.TestCase):
         params["paid_api_keys"]["value"] = ""
         params["apikey"]["value"] = ""
         params["multiple_keys"]["value"] = ""
+        params["__api_key_pool_dirty"]["value"] = ""
 
     def make_translator(self, **params):
         return OpenAILLMTranslator(
@@ -93,6 +94,18 @@ class LLMTranslatorKeyPoolTest(unittest.TestCase):
 
             self.assertIsNone(translator._select_api_key())
 
+    def test_translator_cleared_editor_immediately_blocks_stored_pool(self):
+        env = {"BALLOONTRANS_LLM_OPENAI_FREE_API_KEYS": "stale-free"}
+        with patch("utils.env.load_dotenv"), patch.dict(
+            os.environ, env, clear=True
+        ):
+            translator = self.make_translator(free_api_keys="replacement")
+            self.assertEqual(translator._select_api_key(), "replacement")
+
+            translator.updateParam("free_api_keys", "")
+
+            self.assertIsNone(translator._select_api_key())
+
     def test_translator_legacy_params_are_combined_as_free_pool(self):
         with patch("utils.env.load_dotenv"), patch.dict(
             os.environ, {}, clear=True
@@ -137,6 +150,7 @@ class LLMOCRKeyPoolTest(unittest.TestCase):
             "paid_api_keys": "",
             "api_key": "",
             "multiple_keys": "",
+            "__api_key_pool_dirty": "",
         }
         for key, value in defaults.items():
             if key in params:
@@ -198,6 +212,18 @@ class LLMOCRKeyPoolTest(unittest.TestCase):
                 api_key_tier="Paid",
                 paid_api_keys="",
             )
+
+            self.assertIsNone(ocr._select_api_key())
+
+    def test_ocr_cleared_editor_immediately_blocks_stored_pool(self):
+        env = {"BALLOONTRANS_LLM_OCR_OPENAI_FREE_API_KEYS": "stale-free"}
+        with patch("utils.env.load_dotenv"), patch.dict(
+            os.environ, env, clear=True
+        ):
+            ocr = self.make_ocr(free_api_keys="replacement")
+            self.assertEqual(ocr._select_api_key(), "replacement")
+
+            ocr.updateParam("free_api_keys", "")
 
             self.assertIsNone(ocr._select_api_key())
 

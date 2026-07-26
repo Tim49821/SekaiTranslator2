@@ -148,7 +148,7 @@ def update_dotenv(values: Mapping[str, str], path: str = DOTENV_PATH) -> bool:
     values = {
         key: str(value)
         for key, value in values.items()
-        if value is not None and str(value).strip()
+        if value is not None
     }
     if not values:
         return False
@@ -285,10 +285,6 @@ def _single_env_candidates(provider: str, for_ocr: bool = False) -> Tuple[str, .
         return ()
 
     candidates = [primary]
-    if for_ocr:
-        generic = _primary_single_env(provider, for_ocr=False)
-        if generic:
-            candidates.append(generic)
     candidates.extend(LLM_STANDARD_SINGLE_ENVS.get(provider, ()))
     return tuple(candidates)
 
@@ -299,10 +295,6 @@ def _multiple_env_candidates(provider: str, for_ocr: bool = False) -> Tuple[str,
         return ()
 
     candidates = [primary]
-    if for_ocr:
-        generic = _primary_multiple_env(provider, for_ocr=False)
-        if generic:
-            candidates.append(generic)
     return tuple(candidates)
 
 
@@ -341,15 +333,46 @@ def get_llm_api_key_pool(
         normalized_tier,
         for_ocr=for_ocr,
     )
-    tier_value = _first_env_value((tier_env,)) if tier_env else ""
-    if tier_value:
-        return parse_llm_api_keys(tier_value)
+    load_dotenv()
+    if tier_env and tier_env in os.environ:
+        return parse_llm_api_keys(os.environ.get(tier_env, ""))
     if normalized_tier == "Paid":
         return []
 
     single = get_llm_single_api_key(provider, for_ocr=for_ocr)
     multiple = get_llm_multiple_api_keys(provider, for_ocr=for_ocr)
     return parse_llm_api_keys(";".join(value for value in (single, multiple) if value))
+
+
+def _pool_from_dotenv_values(
+    values: Mapping[str, str],
+    provider: str,
+    tier: str,
+    for_ocr: bool = False,
+) -> Tuple[bool, List[str]]:
+    normalized_tier = normalize_llm_api_key_tier(tier)
+    tier_env = _primary_tier_env(provider, normalized_tier, for_ocr=for_ocr)
+    if tier_env and tier_env in values:
+        return True, parse_llm_api_keys(values[tier_env])
+    if normalized_tier == "Paid":
+        return False, []
+
+    single = ""
+    for env_name in _single_env_candidates(provider, for_ocr=for_ocr):
+        candidate = values.get(env_name, "").strip()
+        if candidate:
+            single = candidate
+            break
+    multiple = ""
+    for env_name in _multiple_env_candidates(provider, for_ocr=for_ocr):
+        candidate = values.get(env_name, "").strip()
+        if candidate:
+            multiple = candidate
+            break
+    pool = parse_llm_api_keys(
+        ";".join(value for value in (single, multiple) if value)
+    )
+    return bool(pool), pool
 
 
 def _translator_provider(module_name: str, params: Mapping) -> Optional[str]:
@@ -368,6 +391,43 @@ def _ocr_provider(module_name: str, params: Mapping) -> Optional[str]:
     return None
 
 
+def hydrate_llm_api_key_params_from_dotenv(
+    module_params: Mapping,
+    for_ocr: bool = False,
+    dotenv_path: str = DOTENV_PATH,
+) -> None:
+    """Populate visible key editors from the app-owned .env file."""
+    dotenv_values = parse_dotenv(dotenv_path)
+    if not dotenv_values:
+        return
+
+    provider_resolver = _ocr_provider if for_ocr else _translator_provider
+    for module_name, params in module_params.items():
+        if not isinstance(params, dict):
+            continue
+        provider = provider_resolver(module_name, params)
+        if not provider or provider in LLM_LOCAL_PROVIDERS:
+            continue
+        for tier, param_key in (
+            ("Free", "free_api_keys"),
+            ("Paid", "paid_api_keys"),
+        ):
+            if _usable_secret_value(_get_param_value(params, param_key)):
+                continue
+            found, pool = _pool_from_dotenv_values(
+                dotenv_values,
+                provider,
+                tier,
+                for_ocr=for_ocr,
+            )
+            if found:
+                _set_param_value(params, param_key, ";".join(pool))
+
+
+def _dirty_api_key_pool_params(params: Mapping) -> set:
+    return set(parse_llm_api_keys(_get_param_value(params, "__api_key_pool_dirty")))
+
+
 def _collect_llm_api_keys(module_cfg) -> Dict[str, str]:
     env_values: Dict[str, str] = {}
 
@@ -380,6 +440,7 @@ def _collect_llm_api_keys(module_cfg) -> Dict[str, str]:
         multiple = _usable_secret_value(_get_param_value(params, "multiple_keys"))
         free = _usable_secret_value(_get_param_value(params, "free_api_keys"))
         paid = _usable_secret_value(_get_param_value(params, "paid_api_keys"))
+        dirty_pools = _dirty_api_key_pool_params(params)
         single_env = _primary_single_env(provider)
         multiple_env = _primary_multiple_env(provider)
         free_env = _primary_tier_env(provider, "Free")
@@ -388,12 +449,20 @@ def _collect_llm_api_keys(module_cfg) -> Dict[str, str]:
             env_values[single_env] = single
         if multiple and multiple_env:
             env_values[multiple_env] = multiple
-        free_pool = parse_llm_api_keys(free or ";".join((single, multiple)))
+        free_pool = parse_llm_api_keys(
+            free
+            if free or "free_api_keys" in dirty_pools
+            else ";".join((single, multiple))
+        )
         paid_pool = parse_llm_api_keys(paid)
         if free_pool and free_env:
             env_values[free_env] = ";".join(free_pool)
+        elif "free_api_keys" in dirty_pools and free_env:
+            env_values[free_env] = ""
         if paid_pool and paid_env:
             env_values[paid_env] = ";".join(paid_pool)
+        elif "paid_api_keys" in dirty_pools and paid_env:
+            env_values[paid_env] = ""
 
     for module_name, params in _module_section(module_cfg, "ocr_params").items():
         provider = _ocr_provider(module_name, params)
@@ -404,6 +473,7 @@ def _collect_llm_api_keys(module_cfg) -> Dict[str, str]:
         multiple = _usable_secret_value(_get_param_value(params, "multiple_keys"))
         free = _usable_secret_value(_get_param_value(params, "free_api_keys"))
         paid = _usable_secret_value(_get_param_value(params, "paid_api_keys"))
+        dirty_pools = _dirty_api_key_pool_params(params)
         single_env = _primary_single_env(provider, for_ocr=True)
         multiple_env = _primary_multiple_env(provider, for_ocr=True)
         free_env = _primary_tier_env(provider, "Free", for_ocr=True)
@@ -412,12 +482,20 @@ def _collect_llm_api_keys(module_cfg) -> Dict[str, str]:
             env_values[single_env] = single
         if multiple and multiple_env:
             env_values[multiple_env] = multiple
-        free_pool = parse_llm_api_keys(free or ";".join((single, multiple)))
+        free_pool = parse_llm_api_keys(
+            free
+            if free or "free_api_keys" in dirty_pools
+            else ";".join((single, multiple))
+        )
         paid_pool = parse_llm_api_keys(paid)
         if free_pool and free_env:
             env_values[free_env] = ";".join(free_pool)
+        elif "free_api_keys" in dirty_pools and free_env:
+            env_values[free_env] = ""
         if paid_pool and paid_env:
             env_values[paid_env] = ";".join(paid_pool)
+        elif "paid_api_keys" in dirty_pools and paid_env:
+            env_values[paid_env] = ""
 
     return env_values
 

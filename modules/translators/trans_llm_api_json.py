@@ -123,7 +123,8 @@ class LLM_API_Translator(BaseTranslator):
             "display_name": "Free API keys",
             "description": (
                 "Free API keys separated by semicolons or newlines. "
-                "Leave empty to use .env/environment variables."
+                "Stored .env keys are loaded here; clearing the field "
+                "explicitly disables this pool."
             ),
         },
         "paid_api_keys": {
@@ -132,8 +133,13 @@ class LLM_API_Translator(BaseTranslator):
             "display_name": "Paid API keys",
             "description": (
                 "Paid API keys separated by semicolons or newlines. "
-                "Leave empty to use .env/environment variables."
+                "Stored .env keys are loaded here; clearing the field "
+                "explicitly disables this pool."
             ),
+        },
+        "__api_key_pool_dirty": {
+            "value": "",
+            "hidden": True,
         },
         "apikey": {
             "value": "",
@@ -317,6 +323,11 @@ class LLM_API_Translator(BaseTranslator):
         )
         if configured_keys:
             return configured_keys
+        dirty_pools = parse_llm_api_keys(
+            self.get_param_value("__api_key_pool_dirty")
+        )
+        if param_key in dirty_pools:
+            return []
         if self.api_key_tier == "Free":
             legacy_keys = parse_llm_api_keys(
                 ";".join(
@@ -749,10 +760,23 @@ class LLM_API_Translator(BaseTranslator):
     def updateParam(self, param_key: str, param_content):
         super().updateParam(param_key, param_content)
 
+        if param_key in {"free_api_keys", "paid_api_keys"}:
+            dirty_pools = parse_llm_api_keys(
+                self.get_param_value("__api_key_pool_dirty")
+            )
+            if param_key not in dirty_pools:
+                dirty_pools.append(param_key)
+                self.set_param_value(
+                    "__api_key_pool_dirty",
+                    ";".join(dirty_pools),
+                )
+
         pool_params = [
             "api_key_tier",
             "free_api_keys",
             "paid_api_keys",
+            "apikey",
+            "multiple_keys",
             "provider",
         ]
         if param_key in ["proxy", "endpoint", *pool_params]:

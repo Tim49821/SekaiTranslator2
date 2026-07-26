@@ -34,6 +34,7 @@ from .configpanel import ConfigPanel
 from .threading_utils import any_thread_running, stop_qthread
 from utils.proj_imgtrans import ProjImgTrans
 from utils.config import pcfg, RunStatus, save_config
+from utils.env import hydrate_llm_api_key_params_from_dotenv
 cfg_module = pcfg.module
 
 
@@ -971,6 +972,7 @@ class ModuleManager(QObject):
 
         self.translator_panel = translator_panel = config_panel.trans_config_panel        
         translator_params = merge_config_module_params(cfg_module.translator_params, GET_VALID_TRANSLATORS(), TRANSLATORS.get)
+        hydrate_llm_api_key_params_from_dotenv(translator_params)
         translator_panel.addModulesParamWidgets(translator_params)
         translator_panel.translator_changed.connect(self.setTranslator)
         translator_panel.paramwidget_edited.connect(self.on_translatorparam_edited)
@@ -998,6 +1000,7 @@ class ModuleManager(QObject):
 
         self.ocr_panel = ocr_panel = config_panel.ocr_config_panel
         ocr_params = merge_config_module_params(cfg_module.ocr_params, GET_VALID_OCR(), OCR.get)
+        hydrate_llm_api_key_params_from_dotenv(ocr_params, for_ocr=True)
         ocr_panel.addModulesParamWidgets(ocr_params)
         ocr_panel.paramwidget_edited.connect(self.on_ocrparam_edited)
         ocr_panel.ocr_changed.connect(self.setOCR)
