@@ -22,13 +22,50 @@ class CustomFontTest(unittest.TestCase):
     def setUp(self):
         self.app = ensure_app()
         self.original_custom_fonts = shared.CUSTOM_FONTS
+        self.original_custom_font_options = getattr(shared, "CUSTOM_FONT_OPTIONS", [])
         self.original_font_families = shared.FONT_FAMILIES
         shared.CUSTOM_FONTS = ["Folder Sans", "Folder Serif"]
         shared.FONT_FAMILIES = {"Folder Sans", "Folder Serif", "System Sans"}
 
     def tearDown(self):
         shared.CUSTOM_FONTS = self.original_custom_fonts
+        shared.CUSTOM_FONT_OPTIONS = self.original_custom_font_options
         shared.FONT_FAMILIES = self.original_font_families
+
+    def test_same_family_regular_and_bold_faces_remain_separate(self):
+        option_class = getattr(font_loader, "CustomFontOption", None)
+        self.assertIsNotNone(option_class)
+        options = font_loader.unique_custom_font_options(
+            [
+                option_class("NanumGothicOTF", "Regular", False, False, "NanumGothic.otf"),
+                option_class("NanumGothicOTF", "Bold", True, False, "NanumGothicBold.otf"),
+            ]
+        )
+
+        self.assertEqual(
+            [option.display_name for option in options],
+            ["NanumGothicOTF", "NanumGothicOTF (Bold)"],
+        )
+
+    def test_selecting_bold_face_applies_family_and_bold_style(self):
+        option_class = getattr(font_loader, "CustomFontOption", None)
+        self.assertIsNotNone(option_class)
+        shared.CUSTOM_FONTS = ["NanumGothicOTF"]
+        options = [
+            option_class("NanumGothicOTF", "Regular", False, False, "NanumGothic.otf"),
+            option_class("NanumGothicOTF", "Bold", True, False, "NanumGothicBold.otf"),
+        ]
+        combo = FontFamilyComboBox()
+        changes = []
+        combo.param_changed.connect(lambda name, value: changes.append((name, value)))
+        combo.update_font_list(options)
+
+        combo.setCurrentIndex(1)
+
+        self.assertEqual(
+            changes,
+            [("font_family", "NanumGothicOTF"), ("bold", True), ("italic", False)],
+        )
 
     def test_font_family_names_are_deduplicated_and_sorted(self):
         self.assertTrue(hasattr(font_loader, "unique_font_families"))

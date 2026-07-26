@@ -281,10 +281,16 @@ class TextBlkItem(QGraphicsTextItem):
         self.setPos(rect.topLeft())
         self.prepareGeometryChange()
         self._display_rect = rect
+        self._update_stacking_order()
         self.layout.setMaxSize(rect.width(), rect.height())
         self.setCenterTransform()
         if repaint:
             self.repaint_background()
+
+    def _update_stacking_order(self) -> None:
+        """Keep a smaller nested text box selectable above an enclosing box."""
+        area = abs(self._display_rect.width() * self._display_rect.height())
+        self.setZValue(1.0 / (area + 1.0))
 
     def documentSize(self):
         return self.layout.documentSize()
@@ -1120,8 +1126,10 @@ class TextBlkItem(QGraphicsTextItem):
         old_h = self._display_rect.height()
 
         oc = self.sceneBoundingRect().center()
+        self.prepareGeometryChange()
         self._display_rect.setWidth(w)
         self._display_rect.setHeight(h)
+        self._update_stacking_order()
         self.setCenterTransform()
         pos_shift = oc - self.sceneBoundingRect().center()
         pos_shift = pos_shift / self.scene_scale_factor()

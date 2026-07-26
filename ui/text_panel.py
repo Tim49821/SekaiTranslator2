@@ -8,7 +8,7 @@ from qtpy.QtGui import QFocusEvent, QMouseEvent, QTextCursor, QKeyEvent
 
 from utils import shared
 from utils import config as C
-from utils.font_loader import unique_font_families
+from utils.font_loader import CustomFontOption, unique_custom_font_options
 from utils.fontformat import FontFormat, px2pt, LineSpacingType
 from .custom_widget import Widget, ColorPickerLabel, ClickableLabel, CheckableLabel, TextCheckerLabel, AlignmentChecker, QFontChecker, SizeComboBox, SizeControlLabel, NoBorderPushBtn
 from .textitem import TextBlkItem
@@ -274,6 +274,7 @@ class FontSizeBox(QFrame):
 
 class FontFamilyComboBox(QComboBox):
     param_changed = Signal(str, object)
+    font_style_changed = Signal(bool, bool)
     def __init__(self, emit_if_focused=True, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.currentTextChanged.connect(self.on_fontfamily_changed)
@@ -281,23 +282,52 @@ class FontFamilyComboBox(QComboBox):
         self.emit_if_focused = emit_if_focused
         
     def apply_fontfamily(self):
-        ffamily = self.currentText()
-        if ffamily in shared.CUSTOM_FONTS:
-            self.param_changed.emit('font_family', ffamily)
+        option = self.currentData(Qt.ItemDataRole.UserRole)
+        if isinstance(option, CustomFontOption) and option.family in shared.CUSTOM_FONTS:
+            self.param_changed.emit('font_family', option.family)
+            self.param_changed.emit('bold', option.bold)
+            self.param_changed.emit('italic', option.italic)
+            self.font_style_changed.emit(option.bold, option.italic)
 
     def update_font_list(self, font_list, preferred_font=None):
         self.currentTextChanged.disconnect(self.on_fontfamily_changed)
-        current_font = self.currentText()
-        font_list = unique_font_families(font_list)
-        if current_font not in font_list and preferred_font in font_list:
-            current_font = preferred_font
+        current_option = self.currentData(Qt.ItemDataRole.UserRole)
+        options = [
+            option if isinstance(option, CustomFontOption) else CustomFontOption(str(option))
+            for option in font_list
+        ]
+        options = unique_custom_font_options(options)
         self.clear()
-        self.addItems(font_list)
-        if current_font in font_list:
-            self.setCurrentText(current_font)
-        elif font_list:
-            self.setCurrentIndex(0)
+        for option in options:
+            self.addItem(option.display_name, option)
+            if option.filename:
+                self.setItemData(self.count() - 1, option.filename, Qt.ItemDataRole.ToolTipRole)
+        target_index = self._find_option_index(current_option)
+        if target_index < 0 and preferred_font:
+            target_index = self._find_option_index(CustomFontOption(preferred_font))
+        if target_index < 0 and options:
+            target_index = 0
+        self.setCurrentIndex(target_index)
         self.currentTextChanged.connect(self.on_fontfamily_changed)
+
+    def _find_option_index(self, target):
+        if not isinstance(target, CustomFontOption):
+            return -1
+        family_match = -1
+        for index in range(self.count()):
+            option = self.itemData(index, Qt.ItemDataRole.UserRole)
+            if not isinstance(option, CustomFontOption) or option.family != target.family:
+                continue
+            if family_match < 0:
+                family_match = index
+            if option.bold == target.bold and option.italic == target.italic:
+                return index
+        return family_match
+
+    def set_current_font(self, family, bold=False, italic=False):
+        index = self._find_option_index(CustomFontOption(family, bold=bold, italic=italic))
+        if index >= 0:
+            self.setCurrentIndex(index)
 
     def on_fontfamily_changed(self, _family=''):
         self.apply_fontfamily()
@@ -323,6 +353,7 @@ class FontFormatPanel(Widget):
         self.familybox.setObjectName("FontFamilyBox")
         self.familybox.setToolTip(self.tr("Font Family"))
         self.familybox.param_changed.connect(self.on_param_changed)
+        self.familybox.font_style_changed.connect(self.on_font_style_changed)
         self.familybox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         self.importFontBtn = QPushButton(self.tr("Import Font"))
@@ -522,6 +553,10 @@ class FontFormatPanel(Widget):
         else:
             func(param_name, value, C.active_format, is_global=False, blkitems=self.textblk_item, set_focus=True, **func_kwargs)
 
+    def on_font_style_changed(self, bold: bool, italic: bool):
+        self.formatBtnGroup.boldBtn.setChecked(bold)
+        self.formatBtnGroup.italicBtn.setChecked(italic)
+
     def update_text_style_label(self):
         if self.global_mode():
             active_text_style_label = self.active_text_style_label()
@@ -559,7 +594,11 @@ class FontFormatPanel(Widget):
         if multi_size:
             font_size += "+"
         self.fontsizebox.fcombobox.setCurrentText(font_size)
-        self.familybox.setCurrentText(font_format.font_family)
+        self.familybox.set_current_font(
+            font_format.font_family,
+            bold=font_format.bold,
+            italic=font_format.italic,
+        )
         self.colorPicker.setPickerColor(font_format.foreground_color())
         self.strokeColorPicker.setPickerColor(font_format.stroke_color())
         self.strokeWidthBox.setValue(font_format.stroke_width)

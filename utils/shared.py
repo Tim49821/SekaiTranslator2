@@ -120,6 +120,7 @@ check_local_file_hash = True
 
 FONT_FAMILIES: set = None
 CUSTOM_FONTS = []
+CUSTOM_FONT_OPTIONS = []
 pbar = {}
 runtime_widget_set = set()
 TORCH_INSTALL_PREFERRED_DEVICE = None

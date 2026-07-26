@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,7 +12,7 @@ APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if APP_ROOT not in sys.path:
     sys.path.insert(0, APP_ROOT)
 
-from qtpy.QtCore import QPointF, QSize, Qt
+from qtpy.QtCore import QPointF, QRectF, QSize, Qt
 from qtpy.QtGui import QColor, QImage, QPainter, QPen
 try:
     from qtpy.QtWidgets import QApplication, QUndoCommand, QWidget
@@ -371,6 +372,115 @@ class PaintModeTest(unittest.TestCase):
         self.assertEqual(canvas.imgtrans_proj.inpainted_array[2, 2, 0], 9)
         self.assertEqual(canvas.imgtrans_proj.mask_array[2, 2], 255)
         self.assertEqual(canvas.update_count, 2)
+
+    def test_manual_rectangle_selection_replaces_preview_with_undo(self):
+        canvas = Canvas()
+        canvas.imgtrans_proj = FakeTextProject()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        panel.on_use_recttool()
+        panel.rectPanel.autoChecker.setChecked(False)
+        mask_values = iter((40, 80))
+
+        def segment_rect(image, mask=None):
+            value = next(mask_values)
+            raw_mask = np.full(image.shape[:2], value, dtype=np.uint8)
+            balloon_mask = np.full(image.shape[:2], 255, dtype=np.uint8)
+            return raw_mask, balloon_mask, {
+                "bground_rgb": np.array([10, 20, 30], dtype=np.uint8),
+                "need_inpaint": True,
+            }
+
+        with patch("ui.drawingpanel.get_maskseg_method", return_value=segment_rect):
+            panel.on_end_create_rect(QRectF(10, 15, 30, 25), 0)
+            self.assertEqual(canvas.image_edit_mode, ImageEditMode.RectTool)
+            self.assertEqual(panel.rect_inpaint_dict["inpaint_rect"], [10, 15, 40, 40])
+            self.assertEqual(panel.inpaint_mask_item.pos(), QPointF(10, 15))
+            first_preview = panel.inpaint_mask_item.pixmap().toImage().copy()
+
+            canvas.startCreateTextblock(QPointF(60, 65), hide_control=True)
+            self.assertIsNone(panel.inpaint_mask_item.scene())
+            panel.on_end_create_rect(QRectF(60, 65, 20, 15), 0)
+            self.assertEqual(panel.rect_inpaint_dict["inpaint_rect"], [60, 65, 80, 80])
+            self.assertTrue(np.all(panel.inpaint_mask_array == 80))
+            second_preview = panel.inpaint_mask_item.pixmap().toImage().copy()
+            self.assertNotEqual(second_preview, first_preview)
+
+        canvas.undo()
+        self.assertEqual(panel.rect_inpaint_dict["inpaint_rect"], [10, 15, 40, 40])
+        self.assertTrue(np.all(panel.inpaint_mask_array == 40))
+        self.assertEqual(panel.inpaint_mask_item.pos(), QPointF(10, 15))
+        self.assertIs(panel.inpaint_mask_item.scene(), canvas)
+        self.assertEqual(panel.inpaint_mask_item.pixmap().toImage(), first_preview)
+
+        canvas.redo()
+        self.assertEqual(panel.rect_inpaint_dict["inpaint_rect"], [60, 65, 80, 80])
+        self.assertTrue(np.all(panel.inpaint_mask_array == 80))
+        self.assertEqual(panel.inpaint_mask_item.pos(), QPointF(60, 65))
+        self.assertEqual(panel.inpaint_mask_item.pixmap().toImage(), second_preview)
+
+    def test_invalid_replacement_gesture_restores_previous_manual_preview(self):
+        canvas = Canvas()
+        canvas.imgtrans_proj = FakeTextProject()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        panel.on_use_recttool()
+        panel.rectPanel.autoChecker.setChecked(False)
+
+        def segment_rect(image, mask=None):
+            raw_mask = np.full(image.shape[:2], 60, dtype=np.uint8)
+            balloon_mask = np.full(image.shape[:2], 255, dtype=np.uint8)
+            return raw_mask, balloon_mask, {
+                "bground_rgb": np.array([10, 20, 30], dtype=np.uint8),
+                "need_inpaint": True,
+            }
+
+        with patch("ui.drawingpanel.get_maskseg_method", return_value=segment_rect):
+            panel.on_end_create_rect(QRectF(10, 15, 30, 25), 0)
+
+        canvas.startCreateTextblock(QPointF(60, 65), hide_control=True)
+        self.assertIsNone(panel.inpaint_mask_item.scene())
+        panel.on_end_create_rect(QRectF(60, 65, 1, 1), 0)
+
+        self.assertEqual(panel.rect_inpaint_dict["inpaint_rect"], [10, 15, 40, 40])
+        self.assertEqual(panel.inpaint_mask_item.pos(), QPointF(10, 15))
+        self.assertIs(panel.inpaint_mask_item.scene(), canvas)
+
+    def test_applied_manual_rectangle_clears_preview_and_keeps_image_undoable(self):
+        canvas = Canvas()
+        canvas.imgtrans_proj = FakeTextProject()
+        panel = DrawingPanel(canvas, FakeInpainterPanel())
+        panel.on_use_recttool()
+        panel.rectPanel.autoChecker.setChecked(False)
+        old_check_need_inpaint = pcfg.module.check_need_inpaint
+        pcfg.module.check_need_inpaint = True
+
+        def segment_rect(image, mask=None):
+            raw_mask = np.full(image.shape[:2], 255, dtype=np.uint8)
+            balloon_mask = np.full(image.shape[:2], 255, dtype=np.uint8)
+            return raw_mask, balloon_mask, {
+                "bground_rgb": np.array([70, 80, 90], dtype=np.uint8),
+                "need_inpaint": False,
+            }
+
+        try:
+            with patch("ui.drawingpanel.get_maskseg_method", return_value=segment_rect):
+                panel.on_end_create_rect(QRectF(10, 15, 30, 25), 0)
+            panel.on_rect_inpaintbtn_clicked()
+
+            self.assertIsNone(panel.rect_inpaint_dict)
+            self.assertIsNone(panel.inpaint_mask_item.scene())
+            np.testing.assert_array_equal(
+                canvas.imgtrans_proj.inpainted_array[15:40, 10:40],
+                np.full((25, 30, 3), [70, 80, 90], dtype=np.uint8),
+            )
+
+            canvas.undo()
+            np.testing.assert_array_equal(
+                canvas.imgtrans_proj.inpainted_array[15:40, 10:40],
+                np.zeros((25, 30, 3), dtype=np.uint8),
+            )
+            self.assertEqual(canvas.imgtrans_proj.mask_array.sum(), 0)
+        finally:
+            pcfg.module.check_need_inpaint = old_check_need_inpaint
 
     def test_stroke_item_undo_command_updates_layer_without_scene(self):
         layer = DrawingLayer()

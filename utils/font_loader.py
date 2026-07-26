@@ -1,11 +1,47 @@
 import hashlib
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
 
 FONT_EXTENSIONS = {'.ttf', '.otf', '.ttc', '.pfb'}
+
+
+@dataclass(frozen=True)
+class CustomFontOption:
+    family: str
+    style: str = 'Regular'
+    bold: bool = False
+    italic: bool = False
+    filename: str = ''
+
+    @property
+    def display_name(self) -> str:
+        if not self.style or self.style.casefold() in {'regular', 'normal'}:
+            return self.family
+        return f'{self.family} ({self.style})'
+
+
+def unique_custom_font_options(options) -> List[CustomFontOption]:
+    unique = {}
+    for option in options:
+        key = (
+            option.family.casefold(),
+            (option.style or 'Regular').casefold(),
+            option.bold,
+            option.italic,
+        )
+        unique.setdefault(key, option)
+    return sorted(
+        unique.values(),
+        key=lambda option: (
+            option.family.casefold(),
+            option.style.casefold() not in {'regular', 'normal'},
+            option.style.casefold(),
+        ),
+    )
 
 
 def unique_font_families(families) -> List[str]:
@@ -63,11 +99,35 @@ def add_application_font(font_path: str) -> int:
 
 
 def load_custom_font_families(font_paths) -> List[str]:
-    from qtpy.QtGui import QFontDatabase
+    options = load_custom_font_options(font_paths)
+    return unique_font_families(option.family for option in options)
 
-    families = []
+
+def load_custom_font_options(font_paths) -> List[CustomFontOption]:
+    from qtpy.QtGui import QFontDatabase, QRawFont
+
+    options = []
     for font_path in font_paths:
+        font_path = Path(font_path)
         font_id = add_application_font(str(font_path))
         if font_id >= 0:
-            families.extend(QFontDatabase.applicationFontFamilies(font_id))
-    return unique_font_families(families)
+            families = unique_font_families(QFontDatabase.applicationFontFamilies(font_id))
+            raw_font = QRawFont(str(font_path), 16)
+            raw_family = raw_font.familyName() if raw_font.isValid() else ''
+            raw_style = raw_font.styleName() if raw_font.isValid() else ''
+            for family in families:
+                style = raw_style if family.casefold() == raw_family.casefold() else ''
+                if not style:
+                    styles = QFontDatabase.styles(family)
+                    style = styles[0] if styles else 'Regular'
+                font = QFontDatabase.font(family, style, 12)
+                options.append(
+                    CustomFontOption(
+                        family=family,
+                        style=style or 'Regular',
+                        bold=font.bold(),
+                        italic=font.italic(),
+                        filename=font_path.name,
+                    )
+                )
+    return unique_custom_font_options(options)

@@ -19,7 +19,12 @@ from utils.message import create_error_dialog, create_info_dialog
 from modules import GET_VALID_TEXTDETECTORS, GET_VALID_INPAINTERS, GET_VALID_TRANSLATORS, GET_VALID_OCR, TRANSLATORS
 from .misc import parse_stylesheet, set_html_family, QKEY
 from utils.config import ProgramConfig, pcfg, save_config, text_styles, save_text_styles, load_textstyle_from, FontFormat
-from utils.font_loader import FONT_EXTENSIONS, add_application_font
+from utils.font_loader import (
+    FONT_EXTENSIONS,
+    load_custom_font_options,
+    unique_custom_font_options,
+    unique_font_families,
+)
 from utils.style_matcher import apply_smart_style, extract_source_style
 from utils.proj_imgtrans import ProjImgTrans
 from .canvas import Canvas
@@ -610,8 +615,9 @@ class MainWindow(mainwindow_cls):
             save_text_styles()
 
     def on_show_only_custom_font(self, only_custom: bool):
+        font_options = shared.CUSTOM_FONT_OPTIONS or shared.CUSTOM_FONTS
         self.textPanel.formatpanel.familybox.update_font_list(
-            shared.CUSTOM_FONTS,
+            font_options,
             preferred_font=pcfg.global_fontformat.font_family,
         )
 
@@ -658,9 +664,8 @@ class MainWindow(mainwindow_cls):
         font_dir = Path(shared.PROGRAM_PATH) / 'fonts'
         font_dir.mkdir(parents=True, exist_ok=True)
 
-        imported_families = []
+        imported_options = []
         skipped_files = []
-        from qtpy.QtGui import QFontDatabase
 
         for src in selected_files:
             src_path = Path(src)
@@ -676,29 +681,34 @@ class MainWindow(mainwindow_cls):
                 else:
                     target_path = src_path
 
-                font_id = add_application_font(str(target_path))
-                if font_id < 0:
+                options = load_custom_font_options([target_path])
+                if not options:
                     skipped_files.append(f'{src_path.name}: failed to load')
                     continue
 
-                families = QFontDatabase.applicationFontFamilies(font_id)
-                if len(families) == 0:
-                    skipped_files.append(f'{src_path.name}: no font family found')
-                    continue
-
-                for family in families:
-                    if family not in shared.CUSTOM_FONTS:
-                        shared.CUSTOM_FONTS.append(family)
-                    shared.FONT_FAMILIES.add(family)
-                    imported_families.append(family)
+                shared.CUSTOM_FONT_OPTIONS = unique_custom_font_options(
+                    [*shared.CUSTOM_FONT_OPTIONS, *options]
+                )
+                shared.CUSTOM_FONTS = unique_font_families(
+                    option.family for option in shared.CUSTOM_FONT_OPTIONS
+                )
+                shared.FONT_FAMILIES = set(shared.CUSTOM_FONTS)
+                imported_options.extend(options)
             except Exception as e:
                 skipped_files.append(f'{src_path.name}: {e}')
 
-        if len(imported_families) > 0:
-            unique_families = list(dict.fromkeys(imported_families))
+        if len(imported_options) > 0:
+            imported_options = unique_custom_font_options(imported_options)
             self.on_show_only_custom_font(True)
-            self.textPanel.formatpanel.familybox.setCurrentText(unique_families[0])
-            msg = self.tr("Imported fonts: ") + ', '.join(unique_families)
+            first_option = imported_options[0]
+            self.textPanel.formatpanel.familybox.set_current_font(
+                first_option.family,
+                bold=first_option.bold,
+                italic=first_option.italic,
+            )
+            msg = self.tr("Imported fonts: ") + ', '.join(
+                option.display_name for option in imported_options
+            )
             if len(skipped_files) > 0:
                 msg += '\n' + self.tr("Skipped: ") + '; '.join(skipped_files)
             create_info_dialog(msg)

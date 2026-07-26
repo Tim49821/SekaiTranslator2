@@ -82,6 +82,20 @@ class InpaintUndoCommand(QUndoCommand):
         self.canvas.updateLayers()
 
 
+class RectInpaintSelectionCommand(QUndoCommand):
+    def __init__(self, panel, new_state):
+        super().__init__()
+        self.panel = panel
+        self.old_state = panel.captureRectInpaintSelection()
+        self.new_state = panel._copyRectInpaintSelection(new_state)
+
+    def redo(self) -> None:
+        self.panel.restoreRectInpaintSelection(self.new_state)
+
+    def undo(self) -> None:
+        self.panel.restoreRectInpaintSelection(self.old_state)
+
+
 class InpaintHardResetCommand(QUndoCommand):
     def __init__(self, canvas: Canvas):
         super().__init__()

@@ -3,6 +3,7 @@ from qtpy.QtWidgets import QGridLayout, QPushButton, QComboBox, QSizePolicy, QBo
 from qtpy.QtGui import QPen, QColor, QCursor, QPainter, QPixmap, QBrush, QFontMetrics
 
 from typing import Union, Tuple, List
+import copy
 import numpy as np
 import cv2
 
@@ -26,7 +27,7 @@ from .misc import ndarray2pixmap
 from utils.config import DrawPanelConfig, pcfg
 from utils.shared import CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_HEIGHT
 from utils.logger import logger as LOGGER
-from .drawing_commands import InpaintHardResetCommand, InpaintUndoCommand, StrokeItemUndoCommand
+from .drawing_commands import InpaintHardResetCommand, InpaintUndoCommand, RectInpaintSelectionCommand, StrokeItemUndoCommand
 
 INPAINT_BRUSH_COLOR = QColor(127, 0, 127, 127)
 RESTORE_BRUSH_COLOR = QColor(30, 120, 210, 127)
@@ -370,6 +371,7 @@ class DrawingPanel(Widget):
         canvas.end_scale_tool.connect(self.on_end_scale_tool)
         canvas.cancel_scale_tool.connect(self.on_cancel_scale_tool)
         canvas.scalefactor_changed.connect(self.on_canvas_scalefactor_changed)
+        canvas.begin_create_rect.connect(self.on_begin_create_rect)
         canvas.end_create_rect.connect(self.on_end_create_rect)
 
         self.currentTool: DrawToolCheckBox = None
@@ -1158,6 +1160,8 @@ class DrawingPanel(Widget):
             xyxy[[1, 3]] = np.clip(xyxy[[1, 3]], 0, im_h - 1)
             x1, y1, x2, y2 = xyxy.astype(np.int64)
             if y2 - y1 < 2 or x2 - x1 < 2:
+                if self.rect_inpaint_dict is not None:
+                    self.restoreRectInpaintSelection(self.captureRectInpaintSelection())
                 self.canvas.image_edit_mode = ImageEditMode.RectTool
                 return
             if mode == 0:
@@ -1178,20 +1182,35 @@ class DrawingPanel(Widget):
                 inpaint_dict['feather_radius'] = int(bub_dict.get('feather_radius', 0))
                 user_preview_mask = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
                 user_preview_mask[:, :, [0, 2, 3]] = (mask[:, :, np.newaxis] / 2).astype(np.uint8)
-                self.inpaint_mask_item.setPixmap(ndarray2pixmap(user_preview_mask))
-                self.inpaint_mask_item.setParentItem(self.canvas.baseLayer)
-                self.inpaint_mask_item.setPos(x1, y1)
+                preview_pixmap = ndarray2pixmap(user_preview_mask)
                 if self.rectPanel.auto():
+                    self.inpaint_mask_item.setPixmap(preview_pixmap)
+                    self.inpaint_mask_item.setParentItem(self.canvas.baseLayer)
+                    self.inpaint_mask_item.setPos(x1, y1)
                     self.inpaintRect(inpaint_dict)
                 else:
-                    self.inpaint_mask_array = inpaint_mask_array
-                    self.rect_inpaint_dict = inpaint_dict
+                    new_state = {
+                        'rect_inpaint_dict': inpaint_dict,
+                        'inpaint_mask_array': inpaint_mask_array,
+                        'preview_pixmap': preview_pixmap,
+                        'preview_pos': QPointF(x1, y1),
+                    }
+                    if self.rect_inpaint_dict is None:
+                        self.restoreRectInpaintSelection(new_state)
+                    else:
+                        self.canvas.push_undo_command(RectInpaintSelectionCommand(self, new_state))
             else:   # erasing
                 mask = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
                 erased = self.canvas.imgtrans_proj.img_array[y1: y2, x1: x2]
                 self.canvas.push_undo_command(InpaintUndoCommand(self.canvas, erased, mask, [x1, y1, x2, y2]))
                 self.canvas.image_edit_mode = ImageEditMode.RectTool
             self.setCrossCursor()
+
+    def on_begin_create_rect(self):
+        if self.currentTool != self.rectTool or self.rectPanel.auto():
+            return
+        if self.rect_inpaint_dict is not None and self.inpaint_mask_item.scene() == self.canvas:
+            self.canvas.removeItem(self.inpaint_mask_item)
 
     def _expand_rect_inpaint_context(self, inpaint_dict):
         """Pad a method-3 mask into a larger crop without changing its pixels."""
@@ -1277,6 +1296,46 @@ class DrawingPanel(Widget):
     def on_rectchecker_changed(self):
         if not self.rectTool.isChecked():
             self.clearInpaintItems()
+
+    @staticmethod
+    def _copyRectInpaintSelection(state):
+        if state is None:
+            return None
+        return {
+            'rect_inpaint_dict': copy.deepcopy(state['rect_inpaint_dict']),
+            'inpaint_mask_array': np.copy(state['inpaint_mask_array']),
+            'preview_pixmap': state['preview_pixmap'].copy(),
+            'preview_pos': QPointF(state['preview_pos']),
+        }
+
+    def captureRectInpaintSelection(self):
+        if self.rect_inpaint_dict is None:
+            return None
+        state = {
+            'rect_inpaint_dict': self.rect_inpaint_dict,
+            'inpaint_mask_array': self.inpaint_mask_array,
+            'preview_pixmap': self.inpaint_mask_item.pixmap(),
+            'preview_pos': self.inpaint_mask_item.pos(),
+        }
+        return self._copyRectInpaintSelection(state)
+
+    def restoreRectInpaintSelection(self, state):
+        state = self._copyRectInpaintSelection(state)
+        if self.inpaint_mask_item.scene() == self.canvas:
+            self.canvas.removeItem(self.inpaint_mask_item)
+
+        self.rect_inpaint_dict = None
+        self.inpaint_mask_array = None
+        if state is not None:
+            self.rect_inpaint_dict = state['rect_inpaint_dict']
+            self.inpaint_mask_array = state['inpaint_mask_array']
+            self.inpaint_mask_item.setPixmap(state['preview_pixmap'])
+            self.inpaint_mask_item.setParentItem(self.canvas.baseLayer)
+            self.inpaint_mask_item.setPos(state['preview_pos'])
+
+        if self.currentTool == self.rectTool:
+            self.canvas.image_edit_mode = ImageEditMode.RectTool
+            self.setCrossCursor()
 
     def hideEvent(self, e) -> None:
         if not self.paint_busy:

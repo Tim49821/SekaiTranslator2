@@ -258,7 +258,7 @@ def main():
 
     from utils.logger import setup_logging, logger as LOGGER
     from utils.io_utils import find_all_files_recursive
-    from utils.font_loader import add_application_font, load_custom_font_families, resolve_custom_font_family
+    from utils.font_loader import add_application_font, load_custom_font_options, resolve_custom_font_family, unique_font_families
     from utils import config as program_config
 
     from qtpy.QtCore import QTranslator, QLocale, Qt
@@ -335,9 +335,13 @@ def main():
     # Fonts
     # Load custom fonts if they exist
     shared.CUSTOM_FONTS = []
+    shared.CUSTOM_FONT_OPTIONS = []
     if osp.exists(PATH_FONTS):
         font_paths = find_all_files_recursive(PATH_FONTS, FONT_EXTS)
-        shared.CUSTOM_FONTS = load_custom_font_families(font_paths)
+        shared.CUSTOM_FONT_OPTIONS = load_custom_font_options(font_paths)
+        shared.CUSTOM_FONTS = unique_font_families(
+            option.family for option in shared.CUSTOM_FONT_OPTIONS
+        )
 
     if sys.platform == 'win32' and shared.is_headless():
         # font database does not initialise on windows with qpa -offscreen:

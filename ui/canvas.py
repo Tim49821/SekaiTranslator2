@@ -167,6 +167,7 @@ class Canvas(QGraphicsScene):
 
     scalefactor_changed = Signal()
     end_create_textblock = Signal(QRectF)
+    begin_create_rect = Signal()
     paste2selected_textitems = Signal()
     end_create_rect = Signal(QRectF, int)
     finish_painting = Signal(StrokeImgItem)
@@ -611,6 +612,8 @@ class Canvas(QGraphicsScene):
 
     def startCreateTextblock(self, pos: QPointF, hide_control: bool = False):
         pos = pos / self.scale_factor
+        if self.creating_normal_rect:
+            self.begin_create_rect.emit()
         self.creating_textblock = True
         self.create_block_origin = pos
         self.gv.setCursor(Qt.CursorShape.CrossCursor)
