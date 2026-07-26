@@ -67,6 +67,7 @@ DEFAULT_LLM_PROVIDER_MODEL_OPTIONS = {
 DEFAULT_GEMINI_REASONING_EFFORT_OPTIONS = [
     'default', 'minimal', 'low', 'medium', 'high',
 ]
+DEFAULT_LLM_API_KEY_TIERS = ['Free', 'Paid']
 DEFAULT_LLM_PROVIDER_DEFAULT_MODELS = {
     'OpenAI': 'OAI: gpt-5.2',
     'Google': 'GGL: gemini-3.1-pro-preview',
@@ -745,6 +746,7 @@ def _scan_file(path: str, module_type: str) -> List[ModuleSpec]:
         'GEMINI_REASONING_EFFORT_OPTIONS': deepcopy(
             DEFAULT_GEMINI_REASONING_EFFORT_OPTIONS
         ),
+        'LLM_API_KEY_TIERS': deepcopy(DEFAULT_LLM_API_KEY_TIERS),
         'LLM_OCR_PROVIDER_MODEL_OPTIONS': {
             **deepcopy(DEFAULT_LLM_PROVIDER_MODEL_OPTIONS),
             'Ollama': ['OLLAMA: (override model field)'],
