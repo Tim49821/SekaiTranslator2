@@ -50,6 +50,8 @@ The following modules are provider-specific presets over the same OpenAI-compati
 *   **override model:** Custom model name. This is required for OpenRouter and LLM Studio unless the preset is enough for your endpoint.
 *   **endpoint:** Base URL for the API. Leave blank for provider defaults, except for LLM Studio.
 *   **system_prompt:** System message that defines the translator role and required JSON response.
+*   **system prompt presets:** Provider-specific dropdown and editor for reusable system prompts. Use Add, Replace, and Delete to manage presets; `Default` cannot be deleted. Existing custom system prompts are retained as that provider's default.
+*   **Japanese Doujin/Manga → Korean:** Built-in system-prompt preset for page-context-aware Japanese manga translation with natural Korean dialogue, stable character voice and speech levels, compact SFX handling, conservative OCR repair, and strict JSON output.
 *   **invalid repeat count:** Retry count for response-count mismatches.
 *   **max requests per minute:** RPM limit for each API key.
 *   **delay:** Global delay in seconds between requests.
