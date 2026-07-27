@@ -100,6 +100,35 @@ LLM_PROVIDER_DESCRIPTIONS = {
 }
 
 
+DEFAULT_LLM_SYSTEM_PROMPT = (
+    "You are an expert translator. Your task is to accurately translate the given text snippets. "
+    "You MUST provide the output strictly in the specified JSON format, without any additional "
+    "explanations or markdown formatting. The JSON object must have a single key 'translations', "
+    "which is a list of objects, each with an 'id' (integer) and a 'translation' (string).\n\n"
+    "Example Output Schema:\n"
+    '{"translations": [{"id": 1, "translation": "Translated text here."}]}'
+)
+
+JAPANESE_MANGA_KOREAN_SYSTEM_PROMPT = (
+    "You are a professional translator specializing in Japanese doujinshi and manga translated "
+    "into natural Korean. Treat every supplied text cell as ordered shared page context, using the "
+    "other cells to resolve speaker continuity, character voice, relationships, terminology, and "
+    "tone. Produce concise Korean suitable for speech balloons while faithfully preserving meaning, "
+    "character-specific speech levels, honorifics, emotional intensity, ambiguity, punctuation, and "
+    "intentional repetition. Render SFX, onomatopoeia, and mimetic language naturally and compactly. "
+    "Correct only obvious OCR noise, including Japanese vertical text that is clearly misordered, and "
+    "never invent missing dialogue. Do not censor, arbitrarily soften, embellish, summarize, or add "
+    "translator notes. Return exactly one translation for every requested numeric id. Output only a "
+    "valid JSON object whose single 'translations' array contains objects with 'id' and 'translation'; "
+    "do not output markdown, explanations, alternatives, or repeated source text."
+)
+
+LLM_SYSTEM_PROMPT_PRESETS = {
+    "Default": DEFAULT_LLM_SYSTEM_PROMPT,
+    "Japanese Doujin/Manga → Korean": JAPANESE_MANGA_KOREAN_SYSTEM_PROMPT,
+}
+
+
 class LLM_API_Translator(BaseTranslator):
     concate_text = False
     cht_require_convert = True
@@ -173,8 +202,24 @@ class LLM_API_Translator(BaseTranslator):
         },
         "system_prompt": {
             "type": "editor",
-            "value": 'You are an expert translator. Your task is to accurately translate the given text snippets. You MUST provide the output strictly in the specified JSON format, without any additional explanations or markdown formatting. The JSON object must have a single key \'translations\', which is a list of objects, each with an \'id\' (integer) and a \'translation\' (string).\n\nExample Output Schema:\n{"translations": [{"id": 1, "translation": "Translated text here."}]}',
+            "value": DEFAULT_LLM_SYSTEM_PROMPT,
+            "hidden": True,
             "description": "System message to instruct the LLM on its role and required output format.",
+        },
+        "system prompt presets": {
+            "type": "preset_manager",
+            "value": {
+                "selected": "Default",
+                "styles": deepcopy(LLM_SYSTEM_PROMPT_PRESETS),
+            },
+            "default_presets": deepcopy(LLM_SYSTEM_PROMPT_PRESETS),
+            "target_param": "system_prompt",
+            "add_title": "Add system prompt",
+            "name_label": "Prompt name:",
+            "add_button": "Add prompt",
+            "replace_button": "Replace prompt",
+            "delete_button": "Delete prompt",
+            "description": "Select, add, replace, or delete reusable system prompts for this LLM provider.",
         },
         "invalid repeat count": {
             "value": 2,
