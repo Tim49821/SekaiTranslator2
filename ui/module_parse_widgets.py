@@ -130,7 +130,7 @@ class ParamPushButton(QPushButton):
         self.paramwidget_edited.emit(self.param_key, '')
 
 
-class ParamStyleGuideManager(QWidget):
+class ParamPresetManager(QWidget):
     paramwidget_edited = Signal(str, object)
 
     def __init__(self, param_key: str, param_dict: dict, all_params: dict, scrollWidget: QWidget = None, *args, **kwargs):
@@ -138,27 +138,42 @@ class ParamStyleGuideManager(QWidget):
         self.param_key = param_key
         self.param_dict = param_dict
         self.all_params = all_params
+        self.target_param = param_dict.get('target_param', 'style guide')
+        self.protected_name = param_dict.get('protected_name', 'Default')
         self._syncing = False
 
-        value = param_dict.get('value', {})
-        self.styles = dict(value.get('styles', {}))
-        default_style = self._current_style_guide()
-        if default_style:
-            self.styles['Default'] = default_style
-        elif 'Default' not in self.styles:
-            self.styles['Default'] = ''
-        self.selected = value.get('selected') or 'Default'
-        if self.selected not in self.styles:
-            self.selected = 'Default'
+        value = param_dict.get('value')
+        value = value if isinstance(value, dict) else {}
+        default_presets = param_dict.get('default_presets')
+        self.presets = dict(default_presets) if isinstance(default_presets, dict) else {}
+        saved_presets = value.get('styles')
+        if isinstance(saved_presets, dict):
+            self.presets.update(saved_presets)
+        if self.protected_name not in self.presets:
+            self.presets[self.protected_name] = ''
 
-        self.selector = ParamComboBox(param_key, list(self.styles.keys()), size=CONFIG_COMBOBOX_LONG, scrollWidget=scrollWidget)
+        self.selected = value.get('selected') or self.protected_name
+        if self.selected not in self.presets:
+            self.selected = self.protected_name
+
+        active_text = self._current_target_text()
+        if active_text:
+            if self.selected == self.protected_name:
+                self.presets[self.protected_name] = active_text
+            elif active_text != self.presets.get(self.selected):
+                self.presets[self.selected] = active_text
+
+        # Compatibility for code that consumes the original style-guide manager.
+        self.styles = self.presets
+
+        self.selector = ParamComboBox(param_key, list(self.presets.keys()), size=CONFIG_COMBOBOX_LONG, scrollWidget=scrollWidget)
         self.selector.setCurrentText(self.selected)
-        self.editor = ParamEditor('style guide')
-        self.editor.setText(self.styles.get(self.selected, default_style))
+        self.editor = ParamEditor(self.target_param)
+        self.editor.setText(self.presets.get(self.selected, active_text))
 
-        self.add_btn = QPushButton(self.tr('Add style'))
-        self.replace_btn = QPushButton(self.tr('Replace style'))
-        self.delete_btn = QPushButton(self.tr('Delete style'))
+        self.add_btn = QPushButton(self.tr(param_dict.get('add_button', 'Add style')))
+        self.replace_btn = QPushButton(self.tr(param_dict.get('replace_button', 'Replace style')))
+        self.delete_btn = QPushButton(self.tr(param_dict.get('delete_button', 'Delete style')))
 
         btn_layout = QHBoxLayout()
         btn_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -172,86 +187,129 @@ class ParamStyleGuideManager(QWidget):
         layout.addWidget(self.editor)
         layout.addLayout(btn_layout)
 
-        self.selector.currentTextChanged.connect(self.on_selected_style_changed)
+        self.selector.currentTextChanged.connect(self.on_selected_preset_changed)
         self.editor.textChanged.connect(self.on_editor_changed)
-        self.add_btn.clicked.connect(self.on_add_style)
-        self.replace_btn.clicked.connect(self.on_replace_style)
-        self.delete_btn.clicked.connect(self.on_delete_style)
+        self.add_btn.clicked.connect(self.on_add_preset)
+        self.replace_btn.clicked.connect(self.replace_selected_preset)
+        self.delete_btn.clicked.connect(self.delete_selected_preset)
         self._emit_state()
-        self._emit_active_style()
+        self._emit_active_preset()
 
-    def _current_style_guide(self) -> str:
-        style_param = self.all_params.get('style guide', '')
-        if isinstance(style_param, dict):
-            return str(style_param.get('value', ''))
-        return str(style_param)
+    def _current_target_text(self) -> str:
+        target = self.all_params.get(self.target_param, '')
+        if isinstance(target, dict):
+            return str(target.get('value', ''))
+        return str(target)
+
+    def _set_editor_text(self, text: str):
+        self._syncing = True
+        self.editor.setText(text)
+        self._syncing = False
 
     def _set_selector_items(self):
         self._syncing = True
         current = self.selected
         self.selector.clear()
-        self.selector.addItems(list(self.styles.keys()))
+        self.selector.addItems(list(self.presets.keys()))
         self.selector.setCurrentText(current)
         self._syncing = False
 
     def _state(self) -> dict:
         return {
             'selected': self.selected,
-            'styles': dict(self.styles),
+            'styles': dict(self.presets),
         }
 
     def _emit_state(self):
-        self.paramwidget_edited.emit(self.param_key, self._state())
+        state = self._state()
+        manager_param = self.all_params.get(self.param_key)
+        if isinstance(manager_param, dict):
+            manager_param['value'] = state
+        else:
+            self.all_params[self.param_key] = state
+        self.paramwidget_edited.emit(self.param_key, state)
 
-    def _emit_active_style(self):
-        style_text = self.editor.text()
-        if isinstance(self.all_params.get('style guide'), dict):
-            self.all_params['style guide']['value'] = style_text
-        self.paramwidget_edited.emit('style guide', style_text)
+    def _emit_active_preset(self):
+        preset_text = self.editor.text()
+        target = self.all_params.get(self.target_param)
+        if isinstance(target, dict):
+            target['value'] = preset_text
+        else:
+            self.all_params[self.target_param] = preset_text
+        self.paramwidget_edited.emit(self.target_param, preset_text)
 
-    def on_selected_style_changed(self, style_name: str):
-        if self._syncing or style_name not in self.styles:
+    def on_selected_preset_changed(self, preset_name: str):
+        if self._syncing or preset_name not in self.presets:
             return
-        self.selected = style_name
-        self._syncing = True
-        self.editor.setText(self.styles[style_name])
-        self._syncing = False
+        self.selected = preset_name
+        self._set_editor_text(self.presets[preset_name])
         self._emit_state()
-        self._emit_active_style()
+        self._emit_active_preset()
 
     def on_editor_changed(self):
         if self._syncing:
             return
-        self.styles[self.selected] = self.editor.text()
+        self.presets[self.selected] = self.editor.text()
         self._emit_state()
-        self._emit_active_style()
+        self._emit_active_preset()
+
+    def add_preset(self, name: str) -> bool:
+        name = name.strip()
+        if not name:
+            return False
+        self.selected = name
+        self.presets[name] = self.editor.text()
+        self._set_selector_items()
+        self._emit_state()
+        self._emit_active_preset()
+        return True
+
+    def replace_selected_preset(self):
+        self.presets[self.selected] = self.editor.text()
+        self._emit_state()
+        self._emit_active_preset()
+
+    def delete_selected_preset(self) -> bool:
+        if self.selected == self.protected_name or len(self.presets) <= 1:
+            return False
+        self.presets.pop(self.selected, None)
+        self.selected = self.protected_name if self.protected_name in self.presets else next(iter(self.presets))
+        self._set_selector_items()
+        self._set_editor_text(self.presets[self.selected])
+        self._emit_state()
+        self._emit_active_preset()
+        return True
+
+    def on_add_preset(self):
+        title = self.param_dict.get('add_title', 'Add style guide')
+        label = self.param_dict.get('name_label', 'Style name:')
+        name, ok = QInputDialog.getText(self, self.tr(title), self.tr(label))
+        if ok:
+            self.add_preset(name)
+
+
+class ParamStyleGuideManager(ParamPresetManager):
+    def __init__(self, param_key: str, param_dict: dict, all_params: dict, scrollWidget: QWidget = None, *args, **kwargs):
+        style_param_dict = dict(param_dict)
+        style_param_dict.setdefault('target_param', 'style guide')
+        style_param_dict.setdefault('add_title', 'Add style guide')
+        style_param_dict.setdefault('name_label', 'Style name:')
+        style_param_dict.setdefault('add_button', 'Add style')
+        style_param_dict.setdefault('replace_button', 'Replace style')
+        style_param_dict.setdefault('delete_button', 'Delete style')
+        super().__init__(param_key, style_param_dict, all_params, scrollWidget=scrollWidget, *args, **kwargs)
+
+    def on_selected_style_changed(self, style_name: str):
+        self.on_selected_preset_changed(style_name)
 
     def on_add_style(self):
-        name, ok = QInputDialog.getText(self, self.tr('Add style guide'), self.tr('Style name:'))
-        name = name.strip()
-        if not ok or not name:
-            return
-        self.selected = name
-        self.styles[name] = self.editor.text()
-        self._set_selector_items()
-        self._emit_state()
+        self.on_add_preset()
 
     def on_replace_style(self):
-        self.styles[self.selected] = self.editor.text()
-        self._emit_state()
-        self._emit_active_style()
+        self.replace_selected_preset()
 
     def on_delete_style(self):
-        if self.selected == 'Default' or len(self.styles) <= 1:
-            return
-        self.styles.pop(self.selected, None)
-        self.selected = 'Default' if 'Default' in self.styles else next(iter(self.styles))
-        self._set_selector_items()
-        self._syncing = True
-        self.editor.setText(self.styles[self.selected])
-        self._syncing = False
-        self._emit_state()
-        self._emit_active_style()
+        self.delete_selected_preset()
 
 
 class ParamWidget(QWidget):
@@ -341,6 +399,9 @@ class ParamWidget(QWidget):
 
                 elif param_type == 'style_guide_manager':
                     param_widget = ParamStyleGuideManager(param_key, param_dict, params, scrollWidget=scrollWidget)
+
+                elif param_type == 'preset_manager':
+                    param_widget = ParamPresetManager(param_key, param_dict, params, scrollWidget=scrollWidget)
 
                 elif param_type == 'line_editor':
                     param_widget = ParamLineEditor(param_key, force_digital=is_digital)
