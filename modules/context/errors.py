@@ -114,16 +114,45 @@ def _nested_mappings(value, seen=None):
                 yield nested
 
 
-def _message_values(value, nested_error_only=False) -> List[str]:
-    values: List[str] = []
-    for mapping in _nested_mappings(value):
-        for key, child in mapping.items():
-            key_text = str(key).casefold()
-            if key_text == "message" and isinstance(child, str) and child.strip():
+def _message_values(value, nested_error_only=False, seen=None) -> List[str]:
+    """Extract message strings, optionally restricted to ``error`` branches."""
+
+    if seen is None:
+        seen = set()
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in seen:
+            return []
+        seen.add(identity)
+        if nested_error_only:
+            values: List[str] = []
+            for key, child in value.items():
+                if str(key).casefold() == "error":
+                    values.extend(_message_values(child, seen=seen))
+            # Providers sometimes wrap their error object in a data/result
+            # envelope, so continue looking for an error branch below it.
+            if not values:
+                for child in value.values():
+                    values.extend(_message_values(child, nested_error_only=True, seen=seen))
+            return values
+
+        values = []
+        for key, child in value.items():
+            if str(key).casefold() == "message" and isinstance(child, str) and child.strip():
                 values.append(child.strip())
-            elif nested_error_only and key_text == "error":
-                values.extend(_message_values(child, nested_error_only=False))
-    return values
+            else:
+                values.extend(_message_values(child, seen=seen))
+        return values
+    if isinstance(value, (list, tuple)):
+        identity = id(value)
+        if identity in seen:
+            return []
+        seen.add(identity)
+        values = []
+        for child in value:
+            values.extend(_message_values(child, nested_error_only=nested_error_only, seen=seen))
+        return values
+    return []
 
 
 def _response_text(error) -> str:
