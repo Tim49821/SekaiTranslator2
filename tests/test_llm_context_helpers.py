@@ -38,6 +38,39 @@ class LLMTokenUsageTest(unittest.TestCase):
             "prompt=10, completion=2, total=12, cache_hit=8",
         )
 
+    def test_usage_ignores_invalid_counts_and_only_derives_complete_totals(self):
+        invalid = {
+            "prompt_tokens": True,
+            "completion_tokens": -1,
+            "total_tokens": "12",
+            "prompt_tokens_details": {
+                "cached_tokens": False,
+                "cache_miss_tokens": -2,
+                "cache_write_tokens": "3",
+            },
+        }
+        self.assertEqual(format_token_usage(invalid), "")
+        self.assertEqual(format_token_usage({"prompt_tokens": 4}), "prompt=4")
+        self.assertEqual(format_token_usage({"completion_tokens": 3}), "completion=3")
+        self.assertEqual(
+            format_token_usage({"prompt_tokens": 4, "completion_tokens": 3}),
+            "prompt=4, completion=3, total=7",
+        )
+
+    def test_usage_formats_cache_miss_and_write_after_cache_hit(self):
+        usage = {
+            "prompt_tokens": 1,
+            "completion_tokens": 2,
+            "total_tokens": 3,
+            "cache_hit": 4,
+            "cache_miss": 5,
+            "cache_write": 6,
+        }
+        self.assertEqual(
+            format_token_usage(usage),
+            "prompt=1, completion=2, total=3, cache_hit=4, cache_miss=5, cache_write=6",
+        )
+
 
 class LLMContextErrorTest(unittest.TestCase):
     def test_recognizes_context_codes_and_messages(self):
@@ -63,3 +96,14 @@ class LLMContextErrorTest(unittest.TestCase):
             text="",
         )
         self.assertEqual(provider_error_message(SimpleNamespace(response=response)), "prompt is too long")
+
+    def test_rejects_non_input_statuses_from_all_response_status_fields(self):
+        for status_name in ("status", "http_status", "httpStatus"):
+            with self.subTest(status_name=status_name):
+                response = SimpleNamespace(
+                    **{
+                        status_name: 500,
+                        "json": lambda: {"error": {"code": "context_length_exceeded"}},
+                    }
+                )
+                self.assertFalse(is_context_length_error(SimpleNamespace(response=response)))

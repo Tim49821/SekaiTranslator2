@@ -275,9 +275,10 @@ def _known_statuses(error) -> Tuple[int, ...]:
     response_json = _response_json(error)
     statuses.extend(_status_values(response_json))
     response = _response(error)
-    response_status = _coerce_status(_member(response, "status_code", _MISSING))
-    if response_status is not None:
-        statuses.append(response_status)
+    for name in _STATUS_KEYS:
+        response_status = _coerce_status(_member(response, name, _MISSING))
+        if response_status is not None:
+            statuses.append(response_status)
     return tuple(statuses)
 
 
