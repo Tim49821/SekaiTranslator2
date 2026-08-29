@@ -67,12 +67,53 @@ class LLMHistoryWindowTest(unittest.TestCase):
             previous_page=previous,
             token_budget=6,
             rebuild_reason=None,
-            snapshot_page=lambda _key: None,
+            snapshot_page=lambda _key: first.snapshot,
             render_page=lambda _page: rendered("002.png", 4),
         )
         self.assertEqual([page.page_key for page in history], ["002.png"])
         self.assertEqual(diagnostic.action, ContextAction.EVICT)
         self.assertEqual(diagnostic.evicted, 1)
+
+    def test_missing_retained_snapshot_rebuilds_with_missing_pages_reason(self):
+        project = FakeProject(["001.png", "002.png", "003.png"])
+        key = HistoryWindowKey(project.load_identity, (("model", "demo"),))
+        window = HistoryWindow(key, "001.png", (rendered("001.png", 3),), 3)
+
+        history, diagnostic = eligible_history_for_request(
+            window=window,
+            project=project,
+            page_key="003.png",
+            previous_page=HistoryPage("002.png", ("two",), ("둘",)),
+            token_budget=10,
+            rebuild_reason=None,
+            snapshot_page=lambda _key: None,
+            render_page=lambda page: rendered(page.page_key, 3),
+        )
+
+        self.assertEqual(history, ())
+        self.assertEqual(diagnostic.rebuild_reason, ContextReason.MISSING_PAGES)
+
+    def test_changed_retained_snapshot_rebuilds_with_snapshot_changed_reason(self):
+        project = FakeProject(["001.png", "002.png", "003.png"])
+        key = HistoryWindowKey(project.load_identity, (("model", "demo"),))
+        first = rendered("001.png", 3)
+        window = HistoryWindow(key, "001.png", (first,), 3)
+        changed = HistoryPage("001.png", ("one",), ("changed",))
+        previous = HistoryPage("002.png", ("two",), ("둘",))
+        snapshots = {"001.png": changed, "002.png": previous}
+
+        _history, diagnostic = eligible_history_for_request(
+            window=window,
+            project=project,
+            page_key="003.png",
+            previous_page=previous,
+            token_budget=10,
+            rebuild_reason=None,
+            snapshot_page=snapshots.get,
+            render_page=lambda page: rendered(page.page_key, 3),
+        )
+
+        self.assertEqual(diagnostic.rebuild_reason, ContextReason.SNAPSHOT_CHANGED)
 
     def test_context_recovery_removes_at_least_one_whole_page(self):
         request = RequestContext(

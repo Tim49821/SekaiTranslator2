@@ -138,12 +138,13 @@ def eligible_history_for_request(
             render_page,
         )
 
-    if _window_snapshot_changed(window, snapshot_page):
+    snapshot_reason = _window_snapshot_rebuild_reason(window, snapshot_page)
+    if snapshot_reason is not None:
         return _rebuild_history(
             project,
             page_key,
             token_budget,
-            ContextReason.SNAPSHOT_CHANGED,
+            snapshot_reason,
             snapshot_page,
             render_page,
         )
@@ -329,15 +330,17 @@ def _complete_snapshot(snapshot: Optional[HistoryPage]) -> bool:
     )
 
 
-def _window_snapshot_changed(
+def _window_snapshot_rebuild_reason(
     window: HistoryWindow,
     snapshot_page: Callable[[str], Optional[HistoryPage]],
-) -> bool:
+) -> Optional[ContextReason]:
     for rendered in window.history:
         current = snapshot_page(rendered.page_key)
-        if current is not None and current != rendered.snapshot:
-            return True
-    return False
+        if current is None:
+            return ContextReason.MISSING_PAGES
+        if current != rendered.snapshot:
+            return ContextReason.SNAPSHOT_CHANGED
+    return None
 
 
 def _evict_to_low_water(history, token_budget: int) -> int:
