@@ -97,6 +97,7 @@ class ProjImgTrans:
         self._pagename2idx = {}
         self._idx2pagename = {}
         self._image_info = {}
+        self._load_identity = object()
 
         self._fuzzy_inpainted_list = None
 
@@ -211,15 +212,35 @@ class ProjImgTrans:
             if len(self.pages) > 0:
                 self.set_current_img_byidx(0)
 
+        self._load_identity = object()
+
+    @property
+    def load_identity(self):
+        return self._load_identity
+
     def get_page_progress(self, pagename: str):
         fin_code = self._image_info[pagename]['finish_code']
         return (fin_code & pcfg.module.finish_code) == pcfg.module.finish_code
 
     def set_page_progress(self, pagename, code):
-        self._image_info[pagename]['finish_code'] = code 
+        self._image_info[pagename]['finish_code'] = code
+        if not code & RunStatus.FIN_TRANSLATE:
+            self._image_info[pagename].pop('translation_target', None)
 
     def update_page_progress(self, pagename, code):
         self._image_info[pagename]['finish_code'] |= code 
+
+    def clear_page_progress(self, pagename: str, code: int):
+        self._image_info[pagename]['finish_code'] &= ~code
+        if code & RunStatus.FIN_TRANSLATE:
+            self._image_info[pagename].pop('translation_target', None)
+
+    def begin_full_page_translation(self, page_key: str):
+        self.clear_page_progress(page_key, RunStatus.FIN_TRANSLATE)
+
+    def mark_translation_finished(self, page_key: str, target_language: str):
+        self.update_page_progress(page_key, RunStatus.FIN_TRANSLATE)
+        self._image_info[page_key]['translation_target'] = target_language
 
     def load_translation_from_txt(self, file_path: str):
         page_list = parse_txt_translation(file_path)
@@ -327,6 +348,7 @@ class ProjImgTrans:
             self._image_info[imgname] = {'finish_code': 0}
         self.set_current_img_byidx(0)
         self.save()
+        self._load_identity = object()
         
     def save(self, keep_exist_as_backup=False):
         if not osp.exists(self.directory):
@@ -657,6 +679,5 @@ def gen_ballon_cuts(cuts_dir: str, imgpath: str, blk_list: List[TextBlock], resi
         cut_width_list.append(width)
 
     return cuts_path_list, cut_width_list
-
 
 

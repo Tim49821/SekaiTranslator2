@@ -1,6 +1,6 @@
 import urllib.request
 from ordered_set import OrderedSet
-from typing import Dict, List, Union, Set, Callable
+from typing import Dict, List, Union, Set, Callable, Optional, TYPE_CHECKING
 import time, requests, re, uuid, base64, hmac, functools, json, copy
 from collections import OrderedDict
 
@@ -10,6 +10,9 @@ from ..base import BaseModule, DEVICE_SELECTOR
 from utils.registry import Registry
 from utils.io_utils import text_is_empty
 from utils.logger import logger as LOGGER
+
+if TYPE_CHECKING:
+    from utils.proj_imgtrans import ProjImgTrans
 
 
 TRANSLATORS = Registry('translators')
@@ -50,6 +53,36 @@ SYSTEM_LANG = ''
 SYSTEM_LANGMAP = {
     'zh-CN': '简体中文'        
 }
+
+
+def translation_is_successful(source: str, translation: str) -> bool:
+    source = str(source or '')
+    translation = str(translation or '')
+    if not source.strip():
+        return True
+    if not translation.strip():
+        return False
+    return not translation.lstrip().startswith('[ERROR:')
+
+
+def translation_request_covers_full_page(
+    textblocks: List[TextBlock],
+    project: Optional['ProjImgTrans'],
+    page_key: Optional[str],
+    full_page: bool = False,
+) -> bool:
+    if full_page:
+        return True
+    pages = getattr(project, 'pages', None)
+    page = pages.get(page_key) \
+        if isinstance(pages, dict) and page_key is not None else None
+    if page is None:
+        return False
+    selected_ids = {id(block) for block in textblocks}
+    return all(
+        not block.get_text().strip() or id(block) in selected_ids
+        for block in page
+    )
 
 
 def check_language_support(check_type: str = 'source'):
@@ -138,7 +171,24 @@ class BaseTranslator(BaseModule):
     def _translate(self, src_list: List[str]) -> List[str]:
         raise NotImplementedError
 
-    def translate(self, text: Union[str, List]) -> Union[str, List]:
+    def _translate_with_context(
+        self,
+        src_list: List[str],
+        *,
+        project=None,
+        page_key=None,
+        commit_history_window: bool = False,
+    ) -> List[str]:
+        return self._translate(src_list)
+
+    def translate(
+        self,
+        text: Union[str, List],
+        *,
+        project=None,
+        page_key=None,
+        commit_history_window: bool = False,
+    ) -> Union[str, List]:
         if text_is_empty(text):
             return text
 
@@ -148,9 +198,19 @@ class BaseTranslator(BaseModule):
         
         src_is_list = isinstance(text_source, list)
         if src_is_list: 
-            text_trans = self._translate(text_source)
+            text_trans = self._translate_with_context(
+                text_source,
+                project=project,
+                page_key=page_key,
+                commit_history_window=commit_history_window,
+            )
         else:
-            text_trans = self._translate([text_source])[0]
+            text_trans = self._translate_with_context(
+                [text_source],
+                project=project,
+                page_key=page_key,
+                commit_history_window=commit_history_window,
+            )[0]
         
         if text_trans is None:
             if is_list:
@@ -180,15 +240,28 @@ class BaseTranslator(BaseModule):
         text_list = text.split(breaker)
         return [text.lstrip().rstrip() for text in text_list]
 
-    def translate_textblk_lst(self, textblk_lst: List[TextBlock]):
+    def translate_textblk_lst(
+        self,
+        textblk_lst: List[TextBlock],
+        *,
+        project=None,
+        page_key=None,
+        full_page: bool = False,
+    ) -> bool:
         '''
         only textblks with non-empty source text would be passed to translator
         '''
+        original_sources = [blk.get_text() for blk in textblk_lst]
+        commit_history_window = translation_request_covers_full_page(
+            textblk_lst,
+            project,
+            page_key,
+            full_page,
+        )
         non_empty_ids = []
         text_list = []
         translations = []
-        for ii, blk in enumerate(textblk_lst):
-            text = blk.get_text()
+        for ii, text in enumerate(original_sources):
             if text.strip() != '':
                 non_empty_ids.append(ii)
                 text_list.append(text)
@@ -201,7 +274,12 @@ class BaseTranslator(BaseModule):
             callback(translations = translations, textblocks = textblk_lst, translator = self, source_text = text_list)
 
         if len(text_list) > 0:
-            _translations = self.translate(text_list)
+            _translations = self.translate(
+                text_list,
+                project=project,
+                page_key=page_key,
+                commit_history_window=commit_history_window,
+            )
             for ii, idx in enumerate(non_empty_ids):
                 translations[idx] = _translations[ii]
 
@@ -210,6 +288,11 @@ class BaseTranslator(BaseModule):
 
         for tr, blk in zip(translations, textblk_lst):
             blk.translation = tr
+
+        return all(
+            translation_is_successful(source, translation)
+            for source, translation in zip(original_sources, translations)
+        )
 
     def supported_languages(self) -> List[str]:
         return self.valid_lang_list
