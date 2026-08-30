@@ -59,6 +59,8 @@ class LLMTranslatorKeyPoolTest(unittest.TestCase):
 
     def test_translator_rotates_only_selected_pool_and_resets_on_switch(self):
         translator = self.make_translator()
+        committed_window = object()
+        translator._history_window = committed_window
 
         self.assertEqual(
             [translator._select_api_key() for _ in range(3)],
@@ -69,6 +71,7 @@ class LLMTranslatorKeyPoolTest(unittest.TestCase):
 
         self.assertEqual(translator.current_key_index, 0)
         self.assertIsNone(translator.client)
+        self.assertIs(translator._history_window, committed_window)
         self.assertEqual(
             [translator._select_api_key() for _ in range(3)],
             ["paid-a", "paid-b", "paid-a"],

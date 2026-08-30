@@ -1,18 +1,35 @@
+import json
 import tempfile
 import unittest
 from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import httpx
 
 from modules.context.adapter import LLMContextAdapterMixin
 from modules.context.glossary import GlossaryEntry
+from modules.context.errors import ContextLengthError
 from modules.context.history import (
     ContextAction,
     ContextReason,
     HistoryPage,
+    HistoryWindowKey,
     RenderedHistoryPage,
+    RequestContext,
 )
 from modules.context.params import build_llm_context_params
 from modules.translators.base import BaseTranslator
+from modules.translators.trans_llm_api_json import (
+    GoogleLLMTranslator,
+    GrokLLMTranslator,
+    LLMStudioTranslator,
+    OpenAILLMTranslator,
+    OpenRouterLLMTranslator,
+    TranslationResponse,
+)
 from utils.config import RunStatus
 from utils.textblock import TextBlock
 
@@ -337,6 +354,362 @@ class LLMContextAdapterTest(unittest.TestCase):
         translator.set_target("English")
         project._image_info["001.png"]["translation_target"] = "English"
         project._image_info["002.png"]["translation_target"] = "English"
+
+
+class RemoteLLMContextTest(unittest.TestCase):
+    provider_classes = (
+        OpenAILLMTranslator,
+        GoogleLLMTranslator,
+        GrokLLMTranslator,
+        OpenRouterLLMTranslator,
+        LLMStudioTranslator,
+    )
+
+    def setUp(self):
+        self.openai_params = deepcopy(OpenAILLMTranslator.params)
+
+    def tearDown(self):
+        OpenAILLMTranslator.params = self.openai_params
+
+    def make_translator(self, **params):
+        return OpenAILLMTranslator(
+            "日本語",
+            "한국어",
+            raise_unsupported_lang=False,
+            **{
+                "free_api_keys": "test-key",
+                "context mode": "page",
+                "history token budget": 4096,
+                "glossary path": "",
+                "glossary mode": "matching",
+                "max requests per minute": 0,
+                "delay": 0,
+                "retry attempts": 3,
+                "retry timeout": 0,
+                **params,
+            },
+        )
+
+    @staticmethod
+    def response(*translations):
+        return TranslationResponse.model_validate({
+            "translations": [
+                {"id": index + 1, "translation": translation}
+                for index, translation in enumerate(translations)
+            ]
+        })
+
+    def test_every_fixed_provider_gets_independent_context_params(self):
+        values = [
+            provider.params["glossary path"]
+            for provider in self.provider_classes
+        ]
+        for provider in self.provider_classes:
+            self.assertEqual(provider.params["context mode"]["value"], "page")
+            self.assertEqual(
+                provider.params["history token budget"]["value"],
+                4096,
+            )
+        for index, value in enumerate(values):
+            for other in values[index + 1:]:
+                self.assertIsNot(value, other)
+
+    def test_disabled_features_preserve_existing_two_message_shape(self):
+        translator = self.make_translator()
+
+        messages, prompt = translator._assemble_request(["こんにちは"])
+
+        self.assertEqual(messages, [
+            {"role": "system", "content": translator.system_prompt},
+            {"role": "user", "content": prompt},
+        ])
+        self.assertEqual(
+            prompt,
+            "Please translate the following text snippets from Japanese to Korean. "
+            "The input is provided as a JSON array. Respond with a JSON object in the specified format.\n\n"
+            "INPUT:\n[\n"
+            "  {\n"
+            '    "id": 1,\n'
+            '    "source": "こんにちは"\n'
+            "  }\n"
+            "]",
+        )
+
+    def test_matching_glossary_is_only_in_current_user_message(self):
+        translator = self.make_translator()
+        page = translator._render_history_page(
+            HistoryPage("001.png", ("Hero",), ("용사",))
+        )
+        context = RequestContext(
+            history=(page,),
+            glossary=(
+                GlossaryEntry("Hero", "용사"),
+                GlossaryEntry("Mage", "마법사"),
+            ),
+            glossary_mode="matching",
+            history_budget=4096,
+        )
+
+        messages, _prompt = translator._assemble_request(
+            ["Mage appears"],
+            context,
+        )
+
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["system", "user", "assistant", "user"],
+        )
+        self.assertNotIn("glossary", messages[1]["content"])
+        self.assertIn('"source":"Mage"', messages[-1]["content"])
+        self.assertNotIn('"source":"Hero"', messages[-1]["content"])
+
+    def test_all_glossary_is_stable_system_message_before_history(self):
+        translator = self.make_translator()
+        context = RequestContext(
+            history=(),
+            glossary=(GlossaryEntry("Hero", "용사"),),
+            glossary_mode="all",
+            history_budget=4096,
+        )
+
+        messages, _prompt = translator._assemble_request(
+            ["Nothing matches"],
+            context,
+        )
+
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["system", "system", "user"],
+        )
+        self.assertIn('"source":"Hero"', messages[1]["content"])
+        self.assertNotIn("GLOSSARY", messages[-1]["content"])
+
+    def test_ordinary_retry_reuses_equal_immutable_messages(self):
+        translator = self.make_translator()
+        requests = []
+
+        def request(messages, **_kwargs):
+            requests.append(deepcopy(messages))
+            if len(requests) == 1:
+                raise httpx.RequestError("temporary connection failure")
+            return self.response("안녕하세요")
+
+        with patch.object(
+            translator,
+            "_request_translation",
+            side_effect=request,
+        ):
+            result = translator._translate(["こんにちは"])
+
+        self.assertEqual(result, ["안녕하세요"])
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0], requests[1])
+
+    def test_context_recovery_evicts_whole_page_without_retry_or_early_commit(self):
+        translator = self.make_translator(**{"retry attempts": 1})
+        first = translator._render_history_page(
+            HistoryPage("001.png", ("Hero",), ("용사",))
+        )
+        second = translator._render_history_page(
+            HistoryPage("002.png", ("Mage",), ("마법사",))
+        )
+        context = RequestContext(
+            history=(first, second),
+            glossary=(GlossaryEntry("Current", "현재"),),
+            glossary_mode="matching",
+            history_budget=4096,
+            window_key=HistoryWindowKey(object(), (("model", "demo"),)),
+            request_page_key="003.png",
+        )
+        committed_before = object()
+        translator._history_window = committed_before
+        requests = []
+        windows_during_requests = []
+
+        def request(messages, **_kwargs):
+            requests.append(deepcopy(messages))
+            windows_during_requests.append(translator._history_window)
+            if len(requests) == 1:
+                raise ContextLengthError("maximum context length exceeded")
+            return self.response("현재")
+
+        with patch.object(
+            translator,
+            "_request_translation",
+            side_effect=request,
+        ):
+            result = translator._translate(
+                ["Current"],
+                request_context=context,
+                page_key="003.png",
+                commit_history_window=True,
+            )
+
+        self.assertEqual(result, ["현재"])
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1], [requests[0][0]] + requests[0][3:])
+        self.assertEqual(requests[0][-1], requests[1][-1])
+        self.assertIn('"source":"Current"', requests[1][-1]["content"])
+        self.assertTrue(
+            all(window is committed_before for window in windows_during_requests)
+        )
+        self.assertIsNot(translator._history_window, committed_before)
+        self.assertEqual(
+            [page.page_key for page in translator._history_window.history],
+            ["002.png"],
+        )
+
+    def test_context_recovery_final_failure_preserves_committed_window(self):
+        translator = self.make_translator()
+        page = translator._render_history_page(
+            HistoryPage("001.png", ("Hero",), ("용사",))
+        )
+        context = RequestContext(
+            history=(page,),
+            history_budget=4096,
+            window_key=HistoryWindowKey(object(), (("model", "demo"),)),
+            request_page_key="002.png",
+        )
+        committed_before = object()
+        translator._history_window = committed_before
+
+        with patch.object(
+            translator,
+            "_request_translation",
+            side_effect=ContextLengthError("maximum context length exceeded"),
+        ) as request:
+            result = translator._translate(
+                ["Current"],
+                request_context=context,
+                page_key="002.png",
+                commit_history_window=True,
+            )
+
+        self.assertEqual(result, ["[ERROR: ContextLengthError]"])
+        self.assertEqual(request.call_count, 2)
+        self.assertIs(translator._history_window, committed_before)
+
+    def test_request_passes_messages_untouched_and_logs_only_aggregate_usage(self):
+        translator = self.make_translator()
+        messages = [
+            {"role": "system", "content": "private system"},
+            {"role": "user", "content": "private glossary and source"},
+        ]
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content=(
+                    '{"translations":[{"id":1,'
+                    '"translation":"안녕하세요"}]}'
+                )
+            ))],
+            usage=SimpleNamespace(
+                prompt_tokens=5,
+                completion_tokens=4,
+                total_tokens=9,
+            ),
+        )
+        create = MagicMock(return_value=completion)
+        translator.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        translator.logger = MagicMock()
+
+        with patch.object(
+            translator,
+            "_select_api_key",
+            return_value="test-key",
+        ), patch.object(
+            translator,
+            "_initialize_client",
+            return_value=True,
+        ), patch.object(translator, "_respect_delay"):
+            response = translator._request_translation(
+                messages,
+                usage_page_key="003.png\nsecret",
+                usage_attempt=2,
+            )
+
+        self.assertEqual(response.translations[0].translation, "안녕하세요")
+        self.assertIs(create.call_args.kwargs["messages"], messages)
+        self.assertEqual(translator.token_count, 9)
+        self.assertEqual(translator.token_count_last, 9)
+        translator.logger.debug.assert_any_call(
+            "LLM token usage: page=%s, attempt=%s, %s",
+            "003.png secret",
+            2,
+            "prompt=5, completion=4, total=9",
+        )
+        logged = repr(translator.logger.method_calls)
+        self.assertNotIn("private system", logged)
+        self.assertNotIn("private glossary and source", logged)
+
+    def test_request_classifies_context_errors_without_logging_provider_body(self):
+        translator = self.make_translator()
+        provider_secret = "private provider response"
+        provider_error = RuntimeError(provider_secret)
+        provider_error.status_code = 400
+        provider_error.code = "context_length_exceeded"
+        create = MagicMock(side_effect=provider_error)
+        translator.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        translator.logger = MagicMock()
+
+        with patch.object(
+            translator,
+            "_select_api_key",
+            return_value="test-key",
+        ), patch.object(
+            translator,
+            "_initialize_client",
+            return_value=True,
+        ), patch.object(translator, "_respect_delay"):
+            with self.assertRaises(ContextLengthError):
+                translator._request_translation([])
+
+        self.assertNotIn(
+            provider_secret,
+            repr(translator.logger.method_calls),
+        )
+
+    def test_validation_failure_logs_metadata_without_response_body(self):
+        translator = self.make_translator()
+        response_secret = "private malformed response body"
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content=response_secret
+            ))],
+            usage=None,
+        )
+        create = MagicMock(return_value=completion)
+        translator.client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        translator.logger = MagicMock()
+
+        with patch.object(
+            translator,
+            "_select_api_key",
+            return_value="test-key",
+        ), patch.object(
+            translator,
+            "_initialize_client",
+            return_value=True,
+        ), patch.object(translator, "_respect_delay"):
+            with self.assertRaises(json.JSONDecodeError):
+                translator._request_translation([])
+
+        logged = repr(translator.logger.method_calls)
+        self.assertIn("response_chars", logged)
+        self.assertNotIn(response_secret, logged)
+
+    def test_remote_update_param_clears_context_window(self):
+        translator = self.make_translator()
+        translator._history_window = object()
+
+        translator.updateParam("context mode", "history")
+
+        self.assertIsNone(translator._history_window)
 
 
 if __name__ == "__main__":

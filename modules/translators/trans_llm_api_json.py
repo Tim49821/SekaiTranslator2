@@ -1,13 +1,34 @@
 import re
 import time
 import json
-import traceback
 from copy import deepcopy
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import httpx
 import openai
 from pydantic import BaseModel, Field, ValidationError
+
+from modules.context.adapter import LLMContextAdapterMixin
+from modules.context.errors import (
+    ContextLengthError,
+    is_context_length_error,
+    provider_error_message,
+)
+from modules.context.glossary import GLOSSARY_MODE_ALL, render_glossary
+from modules.context.history import (
+    HistoryPage,
+    RenderedHistoryPage,
+    RequestContext,
+    recover_context_length,
+)
+from modules.context.params import (
+    CONTEXT_INVALIDATION_KEYS,
+    build_llm_context_params,
+)
+from modules.context.token_usage import (
+    format_completion_token_usage,
+    messages_token_count,
+)
 
 from .base import BaseTranslator, register_translator
 from utils.env import (
@@ -129,7 +150,7 @@ LLM_SYSTEM_PROMPT_PRESETS = {
 }
 
 
-class LLM_API_Translator(BaseTranslator):
+class LLM_API_Translator(LLMContextAdapterMixin, BaseTranslator):
     concate_text = False
     cht_require_convert = True
     params: Dict = {
@@ -221,6 +242,7 @@ class LLM_API_Translator(BaseTranslator):
             "delete_button": "Delete prompt",
             "description": "Select, add, replace, or delete reusable system prompts for this LLM provider.",
         },
+        **build_llm_context_params(),
         "invalid repeat count": {
             "value": 2,
             "description": "Number of retries if the count of translations mismatches the source count.",
@@ -298,6 +320,7 @@ class LLM_API_Translator(BaseTranslator):
         self.minute_start_time = time.time()
         self.key_usage = {}
         self.client = None
+        self._history_window = None
 
     def _initialize_client(self, api_key_to_use: str) -> bool:
         endpoint = self.endpoint
@@ -324,19 +347,16 @@ class LLM_API_Translator(BaseTranslator):
                 http_client = httpx.Client(mounts=proxy_mounts)
             except Exception as e:
                 self.logger.error(
-                    f"Failed to initialize proxy '{proxy}': {e}. Proceeding without proxy."
+                    "Failed to initialize proxy client: %s. Proceeding without proxy.",
+                    type(e).__name__,
                 )
                 http_client = httpx.Client()
         else:
             http_client = httpx.Client()
 
-        masked_key = (
-            api_key_to_use[:4] + "..." + api_key_to_use[-4:]
-            if len(api_key_to_use) > 8
-            else api_key_to_use
-        )
         self.logger.debug(
-            f"Initializing client for {provider} with key {masked_key} at endpoint {endpoint}"
+            "Initializing client for provider=%s",
+            provider,
         )
 
         try:
@@ -345,7 +365,10 @@ class LLM_API_Translator(BaseTranslator):
             )
             return True
         except Exception as e:
-            self.logger.error(f"Failed to initialize OpenAI client: {e}")
+            self.logger.error(
+                "Failed to initialize OpenAI client: %s",
+                type(e).__name__,
+            )
             self.client = None
             return False
 
@@ -466,21 +489,113 @@ class LLM_API_Translator(BaseTranslator):
     def global_delay(self) -> float:
         return float(self.get_param_value("delay"))
 
-    def _assemble_prompts(self, queries: List[str], to_lang: str):
+    def _render_user_prompt(
+        self,
+        queries: List[str],
+        glossary_entries=(),
+    ) -> str:
         from_lang = self.lang_map.get(self.lang_source, self.lang_source)
+        to_lang = self.lang_map.get(self.lang_target, self.lang_target)
 
         input_elements = [
-            {"id": i + 1, "source": query} for i, query in enumerate(queries)
+            {"id": index + 1, "source": query}
+            for index, query in enumerate(queries)
         ]
-        input_json_str = json.dumps(input_elements, ensure_ascii=False, indent=2)
+        input_json = json.dumps(input_elements, ensure_ascii=False, indent=2)
 
         prompt = (
             f"Please translate the following text snippets from {from_lang} to {to_lang}. "
-            f"The input is provided as a JSON array. Respond with a JSON object in the specified format.\n\n"
-            f"INPUT:\n{input_json_str}"
+            "The input is provided as a JSON array. Respond with a JSON object in the specified format.\n\n"
+            f"INPUT:\n{input_json}"
+        )
+        if glossary_entries:
+            prompt += (
+                "\n\nGLOSSARY:\nUse these mappings as wording constraints without changing "
+                "the target language, ids, item count, or JSON format.\n"
+                + render_glossary(glossary_entries)
+            )
+        return prompt
+
+    @staticmethod
+    def _render_assistant_response(translations) -> str:
+        return json.dumps(
+            {
+                "translations": [
+                    {"id": index + 1, "translation": translation}
+                    for index, translation in enumerate(translations)
+                ]
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
 
-        yield prompt, len(queries)
+    def _context_model_name(self) -> str:
+        model_name = self.override_model or self.model
+        if ": " in model_name:
+            model_name = model_name.split(": ", 1)[1]
+        return model_name
+
+    def _context_prompt_signature(self) -> str:
+        return self.system_prompt
+
+    def _render_history_page(self, page: HistoryPage) -> RenderedHistoryPage:
+        messages = (
+            ("user", self._render_user_prompt(page.sources)),
+            (
+                "assistant",
+                self._render_assistant_response(page.translations),
+            ),
+        )
+        token_count = messages_token_count(
+            [
+                {"role": role, "content": content}
+                for role, content in messages
+            ],
+            self._context_model_name(),
+        )
+        return RenderedHistoryPage(page, messages, token_count)
+
+    def _assemble_request(
+        self,
+        queries: List[str],
+        request_context: Optional[RequestContext] = None,
+    ) -> Tuple[List[Dict], str]:
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+        ]
+        selected_glossary = self._selected_glossary(
+            request_context,
+            queries,
+        )
+        if (
+            request_context is not None
+            and request_context.glossary_mode == GLOSSARY_MODE_ALL
+            and selected_glossary
+        ):
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Use these glossary mappings as wording constraints without changing "
+                    "the target language, ids, item count, or JSON format.\n"
+                    + render_glossary(selected_glossary)
+                ),
+            })
+
+        if request_context is not None:
+            for history_page in request_context.history:
+                for role, content in history_page.messages:
+                    messages.append({"role": role, "content": content})
+
+        matching_glossary = ()
+        if (
+            request_context is not None
+            and request_context.glossary_mode != GLOSSARY_MODE_ALL
+        ):
+            matching_glossary = selected_glossary
+        prompt = self._render_user_prompt(queries, matching_glossary)
+        messages.append({"role": "user", "content": prompt})
+
+        return messages, prompt
 
     def _respect_delay(self):
         current_time = time.time()
@@ -523,7 +638,9 @@ class LLM_API_Translator(BaseTranslator):
             wait_time = 60.1 - (now - start_time)
             if wait_time > 0:
                 self.logger.warning(
-                    f"RPM limit ({rpm}) reached for key {key[:6]}... Waiting {wait_time:.2f} seconds."
+                    "Per-key RPM limit (%s) reached. Waiting %.2f seconds.",
+                    rpm,
+                    wait_time,
                 )
                 time.sleep(wait_time)
             self.key_usage[key] = (0, time.time())
@@ -549,7 +666,13 @@ class LLM_API_Translator(BaseTranslator):
         self.logger.error("All available API keys are currently rate-limited.")
         return None
 
-    def _request_translation(self, prompt: str) -> Optional[TranslationResponse]:
+    def _request_translation(
+        self,
+        messages: List[Dict],
+        *,
+        usage_page_key=None,
+        usage_attempt=None,
+    ) -> Optional[TranslationResponse]:
         current_api_key = "lm-studio"
         if self.provider != "LLM Studio":
             current_api_key = self._select_api_key()
@@ -566,15 +689,7 @@ class LLM_API_Translator(BaseTranslator):
 
         self._respect_delay()
 
-        model_name = self.override_model or self.model
-        # Strip provider prefix (e.g., "OAI: " or "GGL: ")
-        if ": " in model_name:
-            model_name = model_name.split(": ", 1)[1]
-
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": prompt},
-        ]
+        model_name = self._context_model_name()
 
         api_args = {
             "model": model_name,
@@ -612,9 +727,20 @@ class LLM_API_Translator(BaseTranslator):
 
         try:
             completion = self.client.chat.completions.create(**api_args)
-        except Exception as e:
-            self.logger.error(f"API request failed: {e}")
+        except Exception as exc:
+            if is_context_length_error(exc):
+                raise ContextLengthError(provider_error_message(exc)) from exc
+            self.logger.error("API request failed: %s", type(exc).__name__)
             raise
+
+        summary = format_completion_token_usage(completion)
+        if summary:
+            self.logger.debug(
+                "LLM token usage: page=%s, attempt=%s, %s",
+                str(usage_page_key or "-").replace("\n", " ").replace("\r", " "),
+                usage_attempt,
+                summary,
+            )
 
         if (
             completion.choices
@@ -658,7 +784,10 @@ class LLM_API_Translator(BaseTranslator):
                 )
             except (ValidationError, json.JSONDecodeError) as e:
                 self.logger.warning(
-                    f"Initial Pydantic validation failed: {e}. Attempting to fix simple dictionary or list format."
+                    "Initial response validation failed: type=%s, response_chars=%s. "
+                    "Attempting simple dictionary or list repair.",
+                    type(e).__name__,
+                    len(raw_content),
                 )
                 try:
                     simple_data = json.loads(json_to_parse)
@@ -684,7 +813,8 @@ class LLM_API_Translator(BaseTranslator):
                     if fixed_translations:
                         fixed_data = {"translations": fixed_translations}
                         self.logger.debug(
-                            f"Transformed simple response to: {fixed_data}"
+                            "Transformed simple response metadata: items=%s",
+                            len(fixed_translations),
                         )
                         validated_response = TranslationResponse.model_validate(
                             fixed_data
@@ -694,25 +824,43 @@ class LLM_API_Translator(BaseTranslator):
                         )
                     else:
                         raise e
-                except (ValidationError, json.JSONDecodeError, Exception) as final_e:
+                except Exception as final_e:
                     self.logger.error(
-                        f"Pydantic validation or JSON parsing failed even after attempting fix: {final_e}"
+                        "Response validation failed after simple repair: "
+                        "type=%s, response_chars=%s",
+                        type(final_e).__name__,
+                        len(raw_content),
                     )
-                    self.logger.debug(f"Raw JSON content from API: {raw_content}")
                     raise
         else:
             self.logger.warning("No valid message content in API response.")
             return None
 
-        if hasattr(completion, "usage") and completion.usage:
-            self.token_count += completion.usage.total_tokens
-            self.token_count_last = completion.usage.total_tokens
+        usage = getattr(completion, "usage", None)
+        total_tokens = None
+        if isinstance(usage, dict):
+            total_tokens = usage.get("total_tokens")
+        elif usage is not None:
+            total_tokens = getattr(usage, "total_tokens", None)
+        if (
+            isinstance(total_tokens, (int, float))
+            and not isinstance(total_tokens, bool)
+        ):
+            self.token_count += total_tokens
+            self.token_count_last = total_tokens
         else:
             self.token_count_last = 0
 
         return validated_response
 
-    def _translate(self, src_list: List[str]) -> List[str]:
+    def _translate(
+        self,
+        src_list: List[str],
+        *,
+        request_context: Optional[RequestContext] = None,
+        page_key=None,
+        commit_history_window: bool = False,
+    ) -> List[str]:
         if not src_list:
             return []
 
@@ -725,85 +873,110 @@ class LLM_API_Translator(BaseTranslator):
             httpx.RequestError,
         )
 
-        translations = []
-        to_lang = self.lang_map.get(self.lang_target, self.lang_target)
+        num_src = len(src_list)
+        active_context = request_context
+        messages, _prompt = self._assemble_request(src_list, active_context)
+        api_retry_attempt = 0
+        mismatch_retry_attempt = 0
+        request_attempt = 0
 
-        for prompt, num_src in self._assemble_prompts(src_list, to_lang=to_lang):
-            api_retry_attempt = 0
-            mismatch_retry_attempt = 0
+        while True:
+            request_attempt += 1
+            try:
+                parsed_response = self._request_translation(
+                    messages,
+                    usage_page_key=page_key,
+                    usage_attempt=request_attempt,
+                )
 
-            while True:
-                try:
-                    parsed_response = self._request_translation(prompt)
-
-                    if not parsed_response or not parsed_response.translations:
-                        raise ValueError(
-                            "Received empty or invalid parsed response from API."
-                        )
-
-                    if len(parsed_response.translations) != num_src:
-                        raise InvalidNumTranslations(
-                            f"Expected {num_src}, got {len(parsed_response.translations)}"
-                        )
-
-                    translations_dict = {
-                        item.id: item.translation
-                        for item in parsed_response.translations
-                    }
-                    ordered_translations = [
-                        translations_dict.get(i, "") for i in range(1, num_src + 1)
-                    ]
-
-                    translations.extend(ordered_translations)
-                    self.logger.info(
-                        f"Successfully translated batch of {num_src}. Tokens used: {self.token_count_last}"
+                if not parsed_response or not parsed_response.translations:
+                    raise ValueError(
+                        "Received empty or invalid parsed response from API."
                     )
-                    break
 
-                except InvalidNumTranslations as e:
-                    mismatch_retry_attempt += 1
-                    self.logger.warning(
-                        f"Translation structure mismatch: {e}. Attempt {mismatch_retry_attempt}/{self.invalid_repeat_count}."
+                if len(parsed_response.translations) != num_src:
+                    raise InvalidNumTranslations(
+                        f"Expected {num_src}, got {len(parsed_response.translations)}"
                     )
-                    if mismatch_retry_attempt >= self.invalid_repeat_count:
-                        self.logger.error(
-                            "Fatal Error: Failed to get correct translation structure after retries."
-                        )
-                        translations.extend(["[ERROR: Structure Mismatch]"] * num_src)
-                        break
-                    time.sleep(self.retry_timeout / 2)
 
-                except RETRYABLE_EXCEPTIONS as e:
-                    api_retry_attempt += 1
-                    self.logger.warning(
-                        f"API Error (retryable): {type(e).__name__} - {e}. Attempt {api_retry_attempt}/{self.retry_attempts}."
-                    )
-                    if api_retry_attempt >= self.retry_attempts:
-                        self.logger.error(
-                            f"Fatal Error: Failed to connect to API after {self.retry_attempts} attempts."
-                        )
-                        translations.extend([f"[ERROR: API Failed]"] * num_src)
-                        break
-                    time.sleep(self.retry_timeout)
+                translations_dict = {
+                    item.id: item.translation
+                    for item in parsed_response.translations
+                }
+                translations = [
+                    translations_dict.get(index, "")
+                    for index in range(1, num_src + 1)
+                ]
+                self.logger.info(
+                    "Successfully translated batch of %s. Tokens used: %s",
+                    num_src,
+                    self.token_count_last,
+                )
+                if commit_history_window:
+                    self._commit_request_context(active_context)
+                return translations
 
-                except (
-                    ValidationError,
-                    json.JSONDecodeError,
-                    openai.BadRequestError,
-                    openai.AuthenticationError,
-                    ValueError,
-                ) as e:
+            except ContextLengthError:
+                recovered_context = recover_context_length(active_context)
+                if recovered_context is None:
                     self.logger.error(
-                        f"Fatal Error: An unrecoverable error occurred: {type(e).__name__} - {e}"
+                        "Fatal Error: ContextLengthError with no removable history."
                     )
-                    self.logger.debug(traceback.format_exc())
-                    translations.extend([f"[ERROR: {type(e).__name__}]"] * num_src)
-                    break
+                    return ["[ERROR: ContextLengthError]"] * num_src
+                active_context = recovered_context
+                if active_context.diagnostic is not None:
+                    self.logger.warning(str(active_context.diagnostic))
+                messages, _prompt = self._assemble_request(
+                    src_list,
+                    active_context,
+                )
 
-        return translations
+            except InvalidNumTranslations as exc:
+                mismatch_retry_attempt += 1
+                self.logger.warning(
+                    "Translation structure mismatch: type=%s. Attempt %s/%s.",
+                    type(exc).__name__,
+                    mismatch_retry_attempt,
+                    self.invalid_repeat_count,
+                )
+                if mismatch_retry_attempt >= self.invalid_repeat_count:
+                    self.logger.error(
+                        "Fatal Error: Failed to get correct translation structure after retries."
+                    )
+                    return ["[ERROR: Structure Mismatch]"] * num_src
+                time.sleep(self.retry_timeout / 2)
+
+            except RETRYABLE_EXCEPTIONS as exc:
+                api_retry_attempt += 1
+                self.logger.warning(
+                    "API Error (retryable): type=%s. Attempt %s/%s.",
+                    type(exc).__name__,
+                    api_retry_attempt,
+                    self.retry_attempts,
+                )
+                if api_retry_attempt >= self.retry_attempts:
+                    self.logger.error(
+                        "Fatal Error: Failed to connect to API after %s attempts.",
+                        self.retry_attempts,
+                    )
+                    return ["[ERROR: API Failed]"] * num_src
+                time.sleep(self.retry_timeout)
+
+            except (
+                ValidationError,
+                json.JSONDecodeError,
+                openai.BadRequestError,
+                openai.AuthenticationError,
+                ValueError,
+            ) as exc:
+                self.logger.error(
+                    "Fatal Error: An unrecoverable error occurred: type=%s",
+                    type(exc).__name__,
+                )
+                return ["[ERROR: {}]".format(type(exc).__name__)] * num_src
 
     def updateParam(self, param_key: str, param_content):
-        super().updateParam(param_key, param_content)
+        BaseTranslator.updateParam(self, param_key, param_content)
 
         if param_key in {"free_api_keys", "paid_api_keys"}:
             dirty_pools = parse_llm_api_keys(
@@ -828,6 +1001,8 @@ class LLM_API_Translator(BaseTranslator):
             self.client = None
         if param_key in pool_params:
             self.current_key_index = 0
+        if param_key in CONTEXT_INVALIDATION_KEYS:
+            self._clear_history_window()
 
 
 def _build_fixed_provider_params(
@@ -854,7 +1029,13 @@ def _build_fixed_provider_params(
     return params
 
 
-LLM_TRANSLATOR_DEPENDENCIES = ['openai>=2.8.1', 'httpx[socks,brotli]', 'pydantic', 'json5']
+LLM_TRANSLATOR_DEPENDENCIES = [
+    'openai>=2.8.1',
+    'httpx[socks,brotli]',
+    'pydantic',
+    'json5',
+    'tiktoken>=0.7.0',
+]
 
 
 class _FixedProviderLLMTranslator(LLM_API_Translator):
