@@ -826,10 +826,31 @@ class GemmaTranslatorTest(unittest.TestCase):
                     ],
                 },
                 {
+                    "page_key": "reversed-roles.png",
+                    "messages": [
+                        {"role": "assistant", "content": "reversed target"},
+                        {"role": "user", "content": "reversed source"},
+                    ],
+                },
+                {
                     "page_key": "empty-content.png",
                     "messages": [
                         {"role": "user", "content": ""},
                         {"role": "assistant", "content": "empty target"},
+                    ],
+                },
+                {
+                    "page_key": "empty-assistant.png",
+                    "messages": [
+                        {"role": "user", "content": "empty assistant source"},
+                        {"role": "assistant", "content": ""},
+                    ],
+                },
+                {
+                    "page_key": "whitespace-assistant.png",
+                    "messages": [
+                        {"role": "user", "content": "whitespace assistant source"},
+                        {"role": "assistant", "content": " \t "},
                     ],
                 },
                 {
