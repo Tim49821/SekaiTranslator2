@@ -111,6 +111,19 @@ class RecordingTranslator(BaseTranslator):
         return self._translate(src_list)
 
 
+class FinalizingRecordingTranslator(RecordingTranslator):
+    def _setup_translator(self):
+        super()._setup_translator()
+        self.finalization_calls = []
+        self.observed_block = None
+
+    def _finalize_translation(self, success):
+        translation = None
+        if self.observed_block is not None:
+            translation = self.observed_block.translation
+        self.finalization_calls.append((success, translation))
+
+
 class TranslatorContextBoundaryTest(unittest.TestCase):
     def test_textblock_boundary_forwards_project_page_and_completion(self):
         translator = RecordingTranslator("日本語", "한국어")
@@ -187,6 +200,62 @@ class TranslatorContextBoundaryTest(unittest.TestCase):
             success = translator.translate_textblk_lst(blocks)
 
         self.assertFalse(success)
+
+    def test_finalization_runs_after_assignment_and_success_calculation(self):
+        translator = FinalizingRecordingTranslator("日本語", "한국어")
+        block = TextBlock(text=["source"])
+        translator.observed_block = block
+
+        success = translator.translate_textblk_lst([block])
+
+        self.assertTrue(success)
+        self.assertEqual(block.translation, "번역:source")
+        self.assertEqual(
+            translator.finalization_calls,
+            [(True, "번역:source")],
+        )
+
+    def test_false_result_finalizes_after_postprocess_and_assignment(self):
+        translator = FinalizingRecordingTranslator("日本語", "한국어")
+        block = TextBlock(text=["source"])
+        translator.observed_block = block
+
+        def replace_with_error(translations, **_kwargs):
+            translations[0] = "[ERROR: postprocess]"
+
+        with patch.object(
+            translator,
+            "_postprocess_hooks",
+            OrderedDict((("replace", replace_with_error),)),
+        ):
+            success = translator.translate_textblk_lst([block])
+
+        self.assertFalse(success)
+        self.assertEqual(block.translation, "[ERROR: postprocess]")
+        self.assertEqual(
+            translator.finalization_calls,
+            [(False, "[ERROR: postprocess]")],
+        )
+
+    def test_exception_finalizes_false_and_preserves_original_exception(self):
+        translator = FinalizingRecordingTranslator("日本語", "한국어")
+        block = TextBlock(text=["source"])
+        translator.observed_block = block
+        error = RuntimeError("postprocess failed")
+
+        def fail_postprocess(**_kwargs):
+            raise error
+
+        with patch.object(
+            translator,
+            "_postprocess_hooks",
+            OrderedDict((("fail", fail_postprocess),)),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                translator.translate_textblk_lst([block])
+
+        self.assertIs(raised.exception, error)
+        self.assertEqual(translator.finalization_calls, [(False, "")])
 
     def test_error_markers_and_empty_outputs_are_not_successful(self):
         self.assertTrue(translation_is_successful("source", "target"))

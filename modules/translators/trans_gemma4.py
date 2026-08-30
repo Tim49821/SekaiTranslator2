@@ -10,7 +10,6 @@ from . import gemma4_worker
 from .base import (
     BaseTranslator,
     register_translator,
-    translation_is_successful,
 )
 from ..base import DEVICE_SELECTOR
 from ..context.adapter import LLMContextAdapterMixin
@@ -352,7 +351,13 @@ class LocalGGUFTranslator(LLMContextAdapterMixin, BaseTranslator):
 
         translations = response.get("translations")
         if not isinstance(translations, list) or len(translations) != len(src_list):
-            self.logger.error(f"{type(self).model_log_name} subprocess returned invalid translation payload: {response}")
+            self.logger.error(
+                "%s subprocess returned invalid translation payload: "
+                "response_type=%s, item_count=%s",
+                type(self).model_log_name,
+                type(response).__name__,
+                len(translations) if isinstance(translations, list) else None,
+            )
             return self._subprocess_error_translations(
                 src_list,
                 f"{type(self).model_log_name} subprocess returned invalid translation payload.",
@@ -362,14 +367,10 @@ class LocalGGUFTranslator(LLMContextAdapterMixin, BaseTranslator):
             text if isinstance(text, str) else ""
             for text in translations
         ]
-        if (
-            commit_history_window
-            and all(
-                translation_is_successful(source, translation)
-                for source, translation in zip(src_list, translations)
-            )
-        ):
-            self._commit_request_context(request_context)
+        self._stage_request_context(
+            request_context,
+            commit_history_window,
+        )
         return translations
 
 

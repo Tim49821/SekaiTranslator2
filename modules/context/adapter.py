@@ -43,8 +43,35 @@ class LLMContextAdapterMixin:
     def _render_history_page(self, page: HistoryPage):
         raise NotImplementedError
 
+    def _clear_pending_request_context(self):
+        self._pending_request_context = None
+
     def _clear_history_window(self):
         self._history_window = None
+        self._clear_pending_request_context()
+
+    def _stage_request_context(
+        self,
+        request_context,
+        commit_history_window,
+    ):
+        self._pending_request_context = (
+            request_context
+            if commit_history_window
+            and isinstance(request_context, RequestContext)
+            else None
+        )
+
+    def _finalize_translation(self, success):
+        pending_context = getattr(
+            self,
+            "_pending_request_context",
+            None,
+        )
+        self._clear_pending_request_context()
+        if success:
+            self._commit_request_context(pending_context)
+        return super()._finalize_translation(success)
 
     def _commit_request_context(self, request_context):
         if (
@@ -197,6 +224,7 @@ class LLMContextAdapterMixin:
         page_key=None,
         commit_history_window=False,
     ):
+        self._clear_pending_request_context()
         request_context = self._snapshot_request_context(project, page_key)
         return self._translate(
             src_list,

@@ -77,7 +77,9 @@ class GeminiTranslatorReasoningTest(unittest.TestCase):
                 translator, "_initialize_client", return_value=True
             ):
                 with patch.object(translator, "_respect_delay"):
-                    translator._request_translation("translate this")
+                    translator._request_translation([
+                        {"role": "user", "content": "translate this"},
+                    ])
         return create
 
     def test_sends_selected_reasoning_effort(self):

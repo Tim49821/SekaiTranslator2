@@ -912,8 +912,10 @@ class LLM_API_Translator(LLMContextAdapterMixin, BaseTranslator):
                     num_src,
                     self.token_count_last,
                 )
-                if commit_history_window:
-                    self._commit_request_context(active_context)
+                self._stage_request_context(
+                    active_context,
+                    commit_history_window,
+                )
                 return translations
 
             except ContextLengthError:

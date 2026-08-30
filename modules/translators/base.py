@@ -181,6 +181,10 @@ class BaseTranslator(BaseModule):
     ) -> List[str]:
         return self._translate(src_list)
 
+    def _finalize_translation(self, success: bool) -> None:
+        """Finalize state staged by a translation adapter."""
+        return None
+
     def translate(
         self,
         text: Union[str, List],
@@ -251,48 +255,55 @@ class BaseTranslator(BaseModule):
         '''
         only textblks with non-empty source text would be passed to translator
         '''
-        original_sources = [blk.get_text() for blk in textblk_lst]
-        commit_history_window = translation_request_covers_full_page(
-            textblk_lst,
-            project,
-            page_key,
-            full_page,
-        )
-        non_empty_ids = []
-        text_list = []
-        translations = []
-        for ii, text in enumerate(original_sources):
-            if text.strip() != '':
-                non_empty_ids.append(ii)
-                text_list.append(text)
-            translations.append(text)
-
-        # non_empty_txtlst_str = ',\n'.join(text_list)
-        # LOGGER.debug(f'non empty src text list: \n[{non_empty_txtlst_str}]')
-
-        for callback_name, callback in self._preprocess_hooks.items():
-            callback(translations = translations, textblocks = textblk_lst, translator = self, source_text = text_list)
-
-        if len(text_list) > 0:
-            _translations = self.translate(
-                text_list,
-                project=project,
-                page_key=page_key,
-                commit_history_window=commit_history_window,
+        try:
+            original_sources = [blk.get_text() for blk in textblk_lst]
+            commit_history_window = translation_request_covers_full_page(
+                textblk_lst,
+                project,
+                page_key,
+                full_page,
             )
-            for ii, idx in enumerate(non_empty_ids):
-                translations[idx] = _translations[ii]
+            non_empty_ids = []
+            text_list = []
+            translations = []
+            for ii, text in enumerate(original_sources):
+                if text.strip() != '':
+                    non_empty_ids.append(ii)
+                    text_list.append(text)
+                translations.append(text)
 
-        for callback_name, callback in self._postprocess_hooks.items():
-            callback(translations = translations, textblocks = textblk_lst, translator = self)
+            # non_empty_txtlst_str = ',\n'.join(text_list)
+            # LOGGER.debug(f'non empty src text list: \n[{non_empty_txtlst_str}]')
 
-        for tr, blk in zip(translations, textblk_lst):
-            blk.translation = tr
+            for callback_name, callback in self._preprocess_hooks.items():
+                callback(translations = translations, textblocks = textblk_lst, translator = self, source_text = text_list)
 
-        return len(translations) == len(original_sources) and all(
-            translation_is_successful(source, translation)
-            for source, translation in zip(original_sources, translations)
-        )
+            if len(text_list) > 0:
+                _translations = self.translate(
+                    text_list,
+                    project=project,
+                    page_key=page_key,
+                    commit_history_window=commit_history_window,
+                )
+                for ii, idx in enumerate(non_empty_ids):
+                    translations[idx] = _translations[ii]
+
+            for callback_name, callback in self._postprocess_hooks.items():
+                callback(translations = translations, textblocks = textblk_lst, translator = self)
+
+            for tr, blk in zip(translations, textblk_lst):
+                blk.translation = tr
+
+            success = len(translations) == len(original_sources) and all(
+                translation_is_successful(source, translation)
+                for source, translation in zip(original_sources, translations)
+            )
+        except BaseException:
+            self._finalize_translation(False)
+            raise
+
+        self._finalize_translation(success)
+        return success
 
     def supported_languages(self) -> List[str]:
         return self.valid_lang_list

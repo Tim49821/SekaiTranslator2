@@ -71,6 +71,7 @@ class FakeContextTranslator(LLMContextAdapterMixin, BaseTranslator):
         self._history_window = None
         self.model_name = "demo-model"
         self.prompt_signature = "demo-prompt"
+        self.render_token_counts = {}
         self.translate_call = None
 
     def _translate(self, src_list, **kwargs):
@@ -88,7 +89,11 @@ class FakeContextTranslator(LLMContextAdapterMixin, BaseTranslator):
             ("user", "|".join(page.sources)),
             ("assistant", "|".join(page.translations)),
         )
-        return RenderedHistoryPage(page, messages, 3)
+        return RenderedHistoryPage(
+            page,
+            messages,
+            self.render_token_counts.get(page.page_key, 3),
+        )
 
 
 class LLMContextAdapterTest(unittest.TestCase):
@@ -262,6 +267,85 @@ class LLMContextAdapterTest(unittest.TestCase):
                     ContextReason.SETTINGS_CHANGED,
                 )
 
+    def test_project_load_identity_change_rebuilds_committed_window(self):
+        translator = self.make_translator(
+            **{"context mode": "history", "history token budget": 10}
+        )
+        project = FakeContextProject()
+        initial = translator._snapshot_request_context(project, "002.png")
+        translator._commit_request_context(initial)
+
+        project.load_identity = object()
+        rebuilt = translator._snapshot_request_context(project, "003.png")
+
+        self.assertEqual(
+            rebuilt.diagnostic.rebuild_reason,
+            ContextReason.PROJECT_CHANGED,
+        )
+        self.assertEqual(rebuilt.diagnostic.action, ContextAction.REBUILD)
+        self.assertIs(rebuilt.window_key.load_identity, project.load_identity)
+
+    def test_changed_retained_snapshot_rebuilds_through_adapter(self):
+        translator = self.make_translator(
+            **{"context mode": "history", "history token budget": 10}
+        )
+        project = FakeContextProject()
+        initial = translator._snapshot_request_context(project, "002.png")
+        translator._commit_request_context(initial)
+
+        project.pages["001.png"][0].translation = "영웅"
+        rebuilt = translator._snapshot_request_context(project, "003.png")
+
+        self.assertEqual(
+            rebuilt.diagnostic.rebuild_reason,
+            ContextReason.SNAPSHOT_CHANGED,
+        )
+        self.assertEqual(rebuilt.diagnostic.action, ContextAction.REBUILD)
+        first = next(
+            page for page in rebuilt.history if page.page_key == "001.png"
+        )
+        self.assertEqual(first.snapshot.translations, ("영웅",))
+
+    def test_adjacent_oversized_page_reuses_committed_window(self):
+        translator = self.make_translator(
+            **{"context mode": "history", "history token budget": 7}
+        )
+        project = FakeContextProject()
+        initial = translator._snapshot_request_context(project, "002.png")
+        translator._commit_request_context(initial)
+        translator.render_token_counts["002.png"] = 8
+
+        reused = translator._snapshot_request_context(project, "003.png")
+
+        self.assertEqual(
+            [page.page_key for page in reused.history],
+            ["001.png"],
+        )
+        self.assertEqual(reused.diagnostic.action, ContextAction.REUSE)
+        self.assertEqual(
+            reused.diagnostic.rebuild_reason,
+            ContextReason.OVERSIZED_PAGE,
+        )
+
+    def test_adjacent_growth_keeps_pages_below_hard_budget_through_adapter(self):
+        translator = self.make_translator(
+            **{"context mode": "history", "history token budget": 7}
+        )
+        project = FakeContextProject()
+        initial = translator._snapshot_request_context(project, "002.png")
+        translator._commit_request_context(initial)
+
+        grown = translator._snapshot_request_context(project, "003.png")
+
+        self.assertEqual(
+            [page.page_key for page in grown.history],
+            ["001.png", "002.png"],
+        )
+        self.assertEqual(grown.diagnostic.action, ContextAction.GROW)
+        self.assertEqual(grown.diagnostic.token_count, 6)
+        self.assertEqual(grown.diagnostic.appended, 1)
+        self.assertEqual(grown.diagnostic.evicted, 0)
+
     def test_update_param_clears_context_settings_but_not_unrelated_settings(self):
         for key, value in (
             ("context mode", "page"),
@@ -378,6 +462,43 @@ class GemmaContextAdapterTest(unittest.TestCase):
             request_page_key="002.png",
         )
 
+    @staticmethod
+    def worker_result(*translations):
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {"translations": list(translations)},
+                ensure_ascii=False,
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    def translate_page(self, translator, context, completed, hooks=None):
+        block = TextBlock(text=["Current"])
+        hook_patch = patch.object(
+            translator,
+            "_postprocess_hooks",
+            hooks if hooks is not None else OrderedDict(),
+        )
+        with patch.object(
+            translator,
+            "_snapshot_request_context",
+            return_value=context,
+        ), patch(
+            "modules.translators.trans_gemma4.osp.isfile",
+            return_value=True,
+        ), patch(
+            "modules.translators.trans_gemma4.subprocess.run",
+            return_value=completed,
+        ), hook_patch:
+            success = translator.translate_textblk_lst(
+                [block],
+                project=object(),
+                page_key="002.png",
+                full_page=True,
+            )
+        return success, block
+
     def test_rendered_history_uses_plain_stable_glossary_free_messages(self):
         translator = self.make_translator()
 
@@ -402,64 +523,121 @@ class GemmaContextAdapterTest(unittest.TestCase):
             '{"id":2,"translation":"마법사"}]}',
         )
 
-    def test_successful_full_result_commits_logical_history_window(self):
+    def test_successful_full_result_commits_only_after_postprocess(self):
         translator = self.make_translator()
         context = self.request_context(translator)
-        translator._history_window = object()
-        completed = SimpleNamespace(
-            stdout='{"translations":["현재"]}',
-            stderr="",
-            returncode=0,
+        committed_before = object()
+        translator._history_window = committed_before
+        observed = []
+
+        def observe_pending(translations, **_kwargs):
+            observed.append((
+                translator._history_window,
+                translator._pending_request_context,
+                list(translations),
+            ))
+
+        success, block = self.translate_page(
+            translator,
+            context,
+            self.worker_result("현재"),
+            OrderedDict((("observe_pending", observe_pending),)),
         )
 
-        with patch(
-            "modules.translators.trans_gemma4.osp.isfile",
-            return_value=True,
-        ), patch(
-            "modules.translators.trans_gemma4.subprocess.run",
-            return_value=completed,
-        ):
-            result = translator._translate(
-                ["Current"],
-                request_context=context,
-                page_key="002.png",
-                commit_history_window=True,
-            )
-
-        self.assertEqual(result, ["현재"])
+        self.assertTrue(success)
+        self.assertEqual(block.translation, "현재")
+        self.assertEqual(observed, [(committed_before, context, ["현재"])])
         self.assertEqual(translator._history_window.request_page_key, "002.png")
         self.assertEqual(
             [page.page_key for page in translator._history_window.history],
             ["001.png"],
         )
+        self.assertIsNone(translator._pending_request_context)
 
-    def test_error_translation_does_not_commit_logical_history_window(self):
+    def test_empty_and_error_results_clear_pending_without_commit(self):
+        for translation in ("", "[ERROR: StructureError]"):
+            with self.subTest(translation=translation):
+                translator = self.make_translator()
+                context = self.request_context(translator)
+                committed_before = object()
+                translator._history_window = committed_before
+
+                success, block = self.translate_page(
+                    translator,
+                    context,
+                    self.worker_result(translation),
+                )
+
+                self.assertFalse(success)
+                self.assertEqual(block.translation, translation)
+                self.assertIs(translator._history_window, committed_before)
+                self.assertIsNone(translator._pending_request_context)
+
+    def test_postprocess_truncation_clears_pending_without_commit(self):
         translator = self.make_translator()
         context = self.request_context(translator)
         committed_before = object()
         translator._history_window = committed_before
-        completed = SimpleNamespace(
-            stdout='{"translations":["[ERROR: StructureError]"]}',
-            stderr="",
-            returncode=0,
+
+        def truncate(translations, **_kwargs):
+            translations.clear()
+
+        success, block = self.translate_page(
+            translator,
+            context,
+            self.worker_result("현재"),
+            OrderedDict((("truncate", truncate),)),
         )
+
+        self.assertFalse(success)
+        self.assertEqual(block.translation, "")
+        self.assertIs(translator._history_window, committed_before)
+        self.assertIsNone(translator._pending_request_context)
+
+    def test_postprocess_exception_clears_pending_and_propagates(self):
+        translator = self.make_translator()
+        context = self.request_context(translator)
+        committed_before = object()
+        translator._history_window = committed_before
+        error = RuntimeError("postprocess failed")
+
+        def fail_postprocess(**_kwargs):
+            raise error
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.translate_page(
+                translator,
+                context,
+                self.worker_result("현재"),
+                OrderedDict((("fail", fail_postprocess),)),
+            )
+
+        self.assertIs(raised.exception, error)
+        self.assertIs(translator._history_window, committed_before)
+        self.assertIsNone(translator._pending_request_context)
+
+    def test_wrong_length_worker_payload_logs_only_aggregate_metadata(self):
+        translator = self.make_translator()
+        translator.logger = MagicMock()
+        secret = "SECRET-WORKER-TRANSLATION"
 
         with patch(
             "modules.translators.trans_gemma4.osp.isfile",
             return_value=True,
         ), patch(
             "modules.translators.trans_gemma4.subprocess.run",
-            return_value=completed,
+            return_value=self.worker_result("현재", secret),
         ):
-            result = translator._translate(
-                ["Current"],
-                request_context=context,
-                page_key="002.png",
-                commit_history_window=True,
-            )
+            result = translator._translate(["Current"])
 
-        self.assertEqual(result, ["[ERROR: StructureError]"])
-        self.assertIs(translator._history_window, committed_before)
+        self.assertEqual(
+            result,
+            ["[ERROR: Gemma4 GGUF subprocess returned invalid translation payload.]"],
+        )
+        logged = repr(translator.logger.method_calls)
+        self.assertIn("response_type", logged)
+        self.assertIn("item_count", logged)
+        self.assertNotIn(secret, logged)
 
 
 class RemoteLLMContextTest(unittest.TestCase):
@@ -504,6 +682,44 @@ class RemoteLLMContextTest(unittest.TestCase):
                 for index, translation in enumerate(translations)
             ]
         })
+
+    def request_context(self, translator):
+        rendered = translator._render_history_page(
+            HistoryPage("001.png", ("Hero",), ("용사",))
+        )
+        return RequestContext(
+            history=(rendered,),
+            history_budget=4096,
+            window_key=HistoryWindowKey(
+                object(),
+                (("model", "remote"),),
+            ),
+            request_page_key="002.png",
+        )
+
+    def translate_page(self, translator, context, response, hooks=None):
+        block = TextBlock(text=["Current"])
+        hook_patch = patch.object(
+            translator,
+            "_postprocess_hooks",
+            hooks if hooks is not None else OrderedDict(),
+        )
+        with patch.object(
+            translator,
+            "_snapshot_request_context",
+            return_value=context,
+        ), patch.object(
+            translator,
+            "_request_translation",
+            return_value=response,
+        ), hook_patch:
+            success = translator.translate_textblk_lst(
+                [block],
+                project=object(),
+                page_key="002.png",
+                full_page=True,
+            )
+        return success, block
 
     def test_every_fixed_provider_gets_independent_context_params(self):
         values = [
@@ -565,7 +781,7 @@ class RemoteLLMContextTest(unittest.TestCase):
             [message["role"] for message in messages],
             ["system", "user", "assistant", "user"],
         )
-        self.assertNotIn("glossary", messages[1]["content"])
+        self.assertNotIn("glossary", messages[1]["content"].casefold())
         self.assertIn('"source":"Mage"', messages[-1]["content"])
         self.assertNotIn('"source":"Hero"', messages[-1]["content"])
 
@@ -589,6 +805,95 @@ class RemoteLLMContextTest(unittest.TestCase):
         )
         self.assertIn('"source":"Hero"', messages[1]["content"])
         self.assertNotIn("GLOSSARY", messages[-1]["content"])
+
+    def test_successful_result_commits_only_after_postprocess(self):
+        translator = self.make_translator()
+        context = self.request_context(translator)
+        committed_before = object()
+        translator._history_window = committed_before
+        observed = []
+
+        def observe_pending(translations, **_kwargs):
+            observed.append((
+                translator._history_window,
+                translator._pending_request_context,
+                list(translations),
+            ))
+
+        success, block = self.translate_page(
+            translator,
+            context,
+            self.response("현재"),
+            OrderedDict((("observe_pending", observe_pending),)),
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(block.translation, "현재")
+        self.assertEqual(observed, [(committed_before, context, ["현재"])])
+        self.assertEqual(translator._history_window.request_page_key, "002.png")
+        self.assertIsNone(translator._pending_request_context)
+
+    def test_empty_and_error_marker_results_clear_pending_without_commit(self):
+        for translation in ("", "[ERROR: Provider Returned Error]"):
+            with self.subTest(translation=translation):
+                translator = self.make_translator()
+                context = self.request_context(translator)
+                committed_before = object()
+                translator._history_window = committed_before
+
+                success, block = self.translate_page(
+                    translator,
+                    context,
+                    self.response(translation),
+                )
+
+                self.assertFalse(success)
+                self.assertEqual(block.translation, translation)
+                self.assertIs(translator._history_window, committed_before)
+                self.assertIsNone(translator._pending_request_context)
+
+    def test_postprocess_truncation_clears_pending_without_commit(self):
+        translator = self.make_translator()
+        context = self.request_context(translator)
+        committed_before = object()
+        translator._history_window = committed_before
+
+        def truncate(translations, **_kwargs):
+            translations.clear()
+
+        success, block = self.translate_page(
+            translator,
+            context,
+            self.response("현재"),
+            OrderedDict((("truncate", truncate),)),
+        )
+
+        self.assertFalse(success)
+        self.assertEqual(block.translation, "")
+        self.assertIs(translator._history_window, committed_before)
+        self.assertIsNone(translator._pending_request_context)
+
+    def test_postprocess_exception_clears_pending_and_propagates(self):
+        translator = self.make_translator()
+        context = self.request_context(translator)
+        committed_before = object()
+        translator._history_window = committed_before
+        error = RuntimeError("postprocess failed")
+
+        def fail_postprocess(**_kwargs):
+            raise error
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.translate_page(
+                translator,
+                context,
+                self.response("현재"),
+                OrderedDict((("fail", fail_postprocess),)),
+            )
+
+        self.assertIs(raised.exception, error)
+        self.assertIs(translator._history_window, committed_before)
+        self.assertIsNone(translator._pending_request_context)
 
     def test_ordinary_retry_reuses_equal_immutable_messages(self):
         translator = self.make_translator()
@@ -641,17 +946,27 @@ class RemoteLLMContextTest(unittest.TestCase):
 
         with patch.object(
             translator,
+            "_snapshot_request_context",
+            return_value=context,
+        ), patch.object(
+            translator,
             "_request_translation",
             side_effect=request,
+        ), patch.object(
+            translator,
+            "_postprocess_hooks",
+            OrderedDict(),
         ):
-            result = translator._translate(
-                ["Current"],
-                request_context=context,
+            block = TextBlock(text=["Current"])
+            success = translator.translate_textblk_lst(
+                [block],
+                project=object(),
                 page_key="003.png",
-                commit_history_window=True,
+                full_page=True,
             )
 
-        self.assertEqual(result, ["현재"])
+        self.assertTrue(success)
+        self.assertEqual(block.translation, "현재")
         self.assertEqual(len(requests), 2)
         self.assertEqual(requests[1], [requests[0][0]] + requests[0][3:])
         self.assertEqual(requests[0][-1], requests[1][-1])
@@ -664,6 +979,7 @@ class RemoteLLMContextTest(unittest.TestCase):
             [page.page_key for page in translator._history_window.history],
             ["002.png"],
         )
+        self.assertIsNone(translator._pending_request_context)
 
     def test_context_recovery_final_failure_preserves_committed_window(self):
         translator = self.make_translator()
@@ -681,19 +997,30 @@ class RemoteLLMContextTest(unittest.TestCase):
 
         with patch.object(
             translator,
+            "_snapshot_request_context",
+            return_value=context,
+        ), patch.object(
+            translator,
             "_request_translation",
             side_effect=ContextLengthError("maximum context length exceeded"),
-        ) as request:
-            result = translator._translate(
-                ["Current"],
-                request_context=context,
+        ) as request, patch.object(
+            translator,
+            "_postprocess_hooks",
+            OrderedDict(),
+        ):
+            block = TextBlock(text=["Current"])
+            success = translator.translate_textblk_lst(
+                [block],
+                project=object(),
                 page_key="002.png",
-                commit_history_window=True,
+                full_page=True,
             )
 
-        self.assertEqual(result, ["[ERROR: ContextLengthError]"])
+        self.assertFalse(success)
+        self.assertEqual(block.translation, "[ERROR: ContextLengthError]")
         self.assertEqual(request.call_count, 2)
         self.assertIs(translator._history_window, committed_before)
+        self.assertIsNone(translator._pending_request_context)
 
     def test_request_passes_messages_untouched_and_logs_only_aggregate_usage(self):
         translator = self.make_translator()

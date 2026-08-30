@@ -74,6 +74,33 @@ class LLMHistoryWindowTest(unittest.TestCase):
         self.assertEqual(diagnostic.action, ContextAction.EVICT)
         self.assertEqual(diagnostic.evicted, 1)
 
+    def test_adjacent_request_keeps_complete_window_below_hard_budget(self):
+        project = FakeProject(["001.png", "002.png", "003.png"])
+        key = HistoryWindowKey(project.load_identity, (("model", "demo"),))
+        first = rendered("001.png", 4)
+        window = HistoryWindow(key, "002.png", (first,), 4)
+        previous = HistoryPage("002.png", ("two",), ("둘",))
+
+        history, diagnostic = eligible_history_for_request(
+            window=window,
+            project=project,
+            page_key="003.png",
+            previous_page=previous,
+            token_budget=10,
+            rebuild_reason=None,
+            snapshot_page=lambda _key: first.snapshot,
+            render_page=lambda _page: rendered("002.png", 4),
+        )
+
+        self.assertEqual(
+            [page.page_key for page in history],
+            ["001.png", "002.png"],
+        )
+        self.assertEqual(diagnostic.action, ContextAction.GROW)
+        self.assertEqual(diagnostic.token_count, 8)
+        self.assertEqual(diagnostic.appended, 1)
+        self.assertEqual(diagnostic.evicted, 0)
+
     def test_missing_retained_snapshot_rebuilds_with_missing_pages_reason(self):
         project = FakeProject(["001.png", "002.png", "003.png"])
         key = HistoryWindowKey(project.load_identity, (("model", "demo"),))

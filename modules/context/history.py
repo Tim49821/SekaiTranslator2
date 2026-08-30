@@ -178,7 +178,9 @@ def eligible_history_for_request(
         )
 
     history.append(rendered)
-    evicted = _evict_to_low_water(history, token_budget)
+    evicted = 0
+    if _history_token_count(history) > token_budget:
+        evicted = _evict_to_low_water(history, token_budget)
     action = ContextAction.EVICT if evicted else ContextAction.GROW
     return _result(
         tuple(history),
