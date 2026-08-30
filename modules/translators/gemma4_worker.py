@@ -357,14 +357,22 @@ def _fit_history_pages_to_budget(
     for page in history_pages:
         if not isinstance(page, dict):
             continue
-        page_messages = page.get("messages")
-        if not isinstance(page_messages, list) or not page_messages:
+        page_key = page.get("page_key")
+        if not isinstance(page_key, str) or not page_key.strip():
             continue
-        if not all(
-            isinstance(message, dict)
-            and isinstance(message.get("role"), str)
-            and isinstance(message.get("content"), str)
-            for message in page_messages
+        page_messages = page.get("messages")
+        if not isinstance(page_messages, list) or len(page_messages) != 2:
+            continue
+        user_message, assistant_message = page_messages
+        if (
+            not isinstance(user_message, dict)
+            or user_message.get("role") != "user"
+            or not isinstance(user_message.get("content"), str)
+            or not user_message["content"].strip()
+            or not isinstance(assistant_message, dict)
+            or assistant_message.get("role") != "assistant"
+            or not isinstance(assistant_message.get("content"), str)
+            or not assistant_message["content"].strip()
         ):
             continue
         valid_pages.append([
@@ -384,16 +392,25 @@ def _fit_history_pages_to_budget(
         _payload_int(payload, "max_input_tokens", 4096),
     )
     base_token_count = _message_token_count(llm, base_messages)
-    remaining_input_tokens = max(0, max_input_tokens - base_token_count)
-    exact_history_budget = min(history_budget, remaining_input_tokens)
-    if exact_history_budget <= 0:
+    if history_budget <= 0 or base_token_count > max_input_tokens:
         return []
 
     selected_newest_first = []
     selected_token_count = 0
     for page_messages in reversed(valid_pages):
         page_token_count = _message_token_count(llm, page_messages)
-        if selected_token_count + page_token_count > exact_history_budget:
+        if selected_token_count + page_token_count > history_budget:
+            break
+        candidate_newest_first = selected_newest_first + [page_messages]
+        candidate_history_messages = []
+        for candidate_page in reversed(candidate_newest_first):
+            candidate_history_messages.extend(candidate_page)
+        candidate_messages = (
+            base_messages[:-1]
+            + candidate_history_messages
+            + base_messages[-1:]
+        )
+        if _message_token_count(llm, candidate_messages) > max_input_tokens:
             break
         selected_newest_first.append(page_messages)
         selected_token_count += page_token_count

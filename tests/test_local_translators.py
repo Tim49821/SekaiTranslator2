@@ -213,6 +213,18 @@ class HistoryBudgetLlama(FakeLlama):
         return list(range(token_count))
 
 
+class NonAdditiveHistoryTokenLlama:
+    def tokenize(self, serialized, add_bos=False):
+        messages = json.loads(serialized.decode("utf-8"))
+        token_count = 11 if len(messages) > 2 else 4
+        return list(range(token_count))
+
+
+class FlatHistoryTokenLlama:
+    def tokenize(self, serialized, add_bos=False):
+        return [0]
+
+
 class LocalTranslatorRegistrationTest(unittest.TestCase):
     def test_registers_local_translators(self):
         init_translator_registries()
@@ -730,7 +742,7 @@ class GemmaTranslatorTest(unittest.TestCase):
     def test_worker_keeps_current_page_and_glossary_when_history_cannot_fit(self):
         payload = self.base_worker_payload()
         payload.update({
-            "max_input_tokens": 60,
+            "max_input_tokens": 59,
             "history_token_budget": 4096,
             "history_pages": [{
                 "page_key": "001.png",
@@ -752,6 +764,92 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertNotIn("recent target", serialized)
         self.assertIn('"source":"line"', messages[-1]["content"])
         self.assertIn('"text": "line one"', messages[-1]["content"])
+
+    def test_history_fitting_uses_exact_combined_message_token_count(self):
+        base_messages = [
+            {"role": "system", "content": "base system"},
+            {"role": "user", "content": "current page"},
+        ]
+        payload = {
+            "max_input_tokens": 10,
+            "history_token_budget": 10,
+            "history_pages": [{
+                "page_key": "001.png",
+                "messages": [
+                    {"role": "user", "content": "previous source"},
+                    {"role": "assistant", "content": "previous target"},
+                ],
+            }],
+        }
+
+        fitted = gemma4_worker._fit_history_pages_to_budget(
+            NonAdditiveHistoryTokenLlama(),
+            payload,
+            base_messages,
+        )
+
+        self.assertEqual(fitted, [])
+
+    def test_history_fitting_rejects_malformed_pages_as_whole_pairs(self):
+        valid_messages = [
+            {"role": "user", "content": "valid source"},
+            {"role": "assistant", "content": "valid target"},
+        ]
+        payload = {
+            "max_input_tokens": 100,
+            "history_token_budget": 100,
+            "history_pages": [
+                {
+                    "messages": [
+                        {"role": "user", "content": "missing key source"},
+                        {"role": "assistant", "content": "missing key target"},
+                    ],
+                },
+                {
+                    "page_key": "",
+                    "messages": [
+                        {"role": "user", "content": "empty key source"},
+                        {"role": "assistant", "content": "empty key target"},
+                    ],
+                },
+                {
+                    "page_key": "wrong-cardinality.png",
+                    "messages": [
+                        {"role": "user", "content": "only one message"},
+                    ],
+                },
+                {
+                    "page_key": "wrong-roles.png",
+                    "messages": [
+                        {"role": "system", "content": "system source"},
+                        {"role": "assistant", "content": "assistant target"},
+                    ],
+                },
+                {
+                    "page_key": "empty-content.png",
+                    "messages": [
+                        {"role": "user", "content": ""},
+                        {"role": "assistant", "content": "empty target"},
+                    ],
+                },
+                {
+                    "page_key": "valid.png",
+                    "messages": valid_messages,
+                },
+            ],
+        }
+        base_messages = [
+            {"role": "system", "content": "base system"},
+            {"role": "user", "content": "current page"},
+        ]
+
+        fitted = gemma4_worker._fit_history_pages_to_budget(
+            FlatHistoryTokenLlama(),
+            payload,
+            base_messages,
+        )
+
+        self.assertEqual(fitted, valid_messages)
 
 
 if __name__ == "__main__":
