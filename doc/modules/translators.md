@@ -5,6 +5,7 @@
 [**Table of Contents**](#table-of-contents)
 - [Ballon Translator: Translation Modules](#ballon-translator-translation-modules)
   - [LLM (Large Language Models)](#llm-large-language-models)
+    - [Translation Context and Glossaries](#translation-context-and-glossaries)
     - [OpenAI-Compatible LLM Providers](#openai-compatible-llm-providers)
     - [Local GGUF Translators](#local-gguf-translators)
   - [Other Translators](#other-translators)
@@ -18,6 +19,44 @@
 ## LLM (Large Language Models)
 
 The current LLM path uses JSON-structured responses. Each request asks the model to return a `translations` array with stable numeric IDs so the app can keep text blocks in order.
+
+### Translation Context and Glossaries
+
+The five fixed remote LLM translators listed below and **Gemma 4 E4B-it** expose the same optional context controls. The settings are stored independently for each translator.
+
+| Setting | Values | Default | Behavior |
+|---|---|---|---|
+| `context mode` | `page`, `history` | `page` | `page` sends only the current page; `history` adds complete earlier translated pages as examples. |
+| `history token budget` | Positive integer | `4096` | Limits the estimated tokens reserved for prior-page examples. Pages are removed whole, oldest first, when the budget requires eviction. |
+| `glossary path` | UTF-8 `.json`, `.txt`, or `.tsv` file | Empty | Selects a glossary file; an empty path disables glossary loading. |
+| `glossary mode` | `matching`, `all` | `matching` | `matching` sends terms found on the current page; `all` sends every term. |
+
+History is rebuilt from completed project pages at runtime and is not written as chat messages into the project file. Each history page remains an indivisible source/translation example: the complete page is either retained or evicted. Matching glossary entries are sent with the current-page prompt, while an `all` glossary is sent as a full constraint before history. Missing or invalid glossary files (including unreadable, unsupported, malformed, or conflicting files) stop the request before the provider or Gemma worker runs.
+
+Glossary files must be UTF-8. Supported examples follow.
+
+JSON:
+
+```json
+[
+  {"src": "勇者", "dst": "용사", "info": "title"},
+  {"src": "魔王", "dst": "마왕"}
+]
+```
+
+TSV (`<TAB>` denotes a literal tab separator):
+
+```text
+勇者<TAB>용사<TAB>title
+魔王<TAB>마왕
+```
+
+TXT:
+
+```text
+勇者->용사 # title
+魔王->마왕
+```
 
 ### OpenAI-Compatible LLM Providers
 
@@ -59,6 +98,10 @@ The following modules are provider-specific presets over the same OpenAI-compati
 *   **temperature / top_p:** Sampling controls. The latest Gemini request formats listed above omit these fields.
 *   **retry attempts / retry timeout:** Retry behavior for transient API failures.
 *   **proxy:** Optional proxy URL.
+*   **context mode:** `page` (default) or `history`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
+*   **history token budget:** `4096` by default; see [Translation Context and Glossaries](#translation-context-and-glossaries).
+*   **glossary path:** Empty by default; accepts UTF-8 `.json`, `.txt`, or `.tsv`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
+*   **glossary mode:** `matching` (default) or `all`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
 
 ### Local GGUF Translators
 
@@ -80,6 +123,10 @@ These modules run a local `llama-cpp-python` worker subprocess and release model
 *   **thinking mode:** Allows thinking-style prompting while still constraining output to structured page translations.
 *   **structure retry count / chunk context cells:** Recovery behavior for malformed JSON or overlarge pages.
 *   **style guide / style guide presets:** Reusable translation style instructions.
+*   **context mode:** `page` (default) or `history`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
+*   **history token budget:** `4096` by default; see [Translation Context and Glossaries](#translation-context-and-glossaries).
+*   **glossary path:** Empty by default; accepts UTF-8 `.json`, `.txt`, or `.tsv`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
+*   **glossary mode:** `matching` (default) or `all`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
 
 ---
 
