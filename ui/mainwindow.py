@@ -1576,7 +1576,14 @@ class MainWindow(mainwindow_cls):
             blk.set_lines_by_xywh(blk._bounding_rect, angle=-blk.angle, x_range=[0, im_w-1], y_range=[0, im_h-1], adjust_bbox=True)
             blk_list.append(blk)
 
-        self.module_manager.runBlktransPipeline(blk_list, tgt_img, mode, blk_ids, tgt_mask = tgt_mask)
+        self.module_manager.runBlktransPipeline(
+            blk_list,
+            tgt_img,
+            mode,
+            blk_ids,
+            tgt_mask=tgt_mask,
+            page_key=self.imgtrans_proj.current_img,
+        )
         return True
 
 

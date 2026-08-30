@@ -16,7 +16,10 @@ from utils.logger import logger as LOGGER
 from utils.registry import LazyModuleError, Registry
 from utils.imgproc_utils import enlarge_window, get_block_mask, restore_masked_pixels
 from utils.io_utils import imread, text_is_empty
-from modules.translators import MissingTranslatorParams
+from modules.translators import (
+    MissingTranslatorParams,
+    translation_request_covers_full_page,
+)
 from modules.base import BaseModule, soft_empty_cache
 from modules import INPAINTERS, TRANSLATORS, TEXTDETECTORS, OCR, \
     GET_VALID_TRANSLATORS, GET_VALID_TEXTDETECTORS, GET_VALID_INPAINTERS, GET_VALID_OCR, \
@@ -355,6 +358,32 @@ class OCRThread(ModuleThread):
         return self.module
 
 
+def translate_project_textblocks(
+    translator,
+    project,
+    page_key,
+    blocks,
+    full_page=False,
+):
+    covers_page = translation_request_covers_full_page(
+        blocks,
+        project,
+        page_key,
+        full_page=full_page,
+    )
+    if covers_page:
+        project.begin_full_page_translation(page_key)
+    success = translator.translate_textblk_lst(
+        blocks,
+        project=project,
+        page_key=page_key,
+        full_page=covers_page,
+    )
+    if success and covers_page:
+        project.mark_translation_finished(page_key, translator.lang_target)
+    return bool(success)
+
+
 class TranslateThread(ModuleThread):
 
     finish_translate_page = Signal(str)
@@ -433,17 +462,38 @@ class TranslateThread(ModuleThread):
         self.job = lambda : self._set_translator(translator)
         self.start()
 
-    def _translate_page(self, page_dict, page_key: str, emit_finished=True):
-        page = page_dict[page_key]
-        try:
-            self.translator.translate_textblk_lst(page)
-        except Exception as e:
-            create_error_dialog(e, self.tr('Translation Failed.'), 'TranslationFailed')
+    def _translate_page(
+        self,
+        project: ProjImgTrans,
+        page_key: str,
+        emit_finished=True,
+    ) -> bool:
+        page = project.pages[page_key]
+        success = translate_project_textblocks(
+            self.translator,
+            project,
+            page_key,
+            page,
+            full_page=True,
+        )
         if emit_finished:
             self.finish_translate_page.emit(page_key)
+        return success
 
-    def translatePage(self, page_dict, page_key: str):
-        self.job = lambda: self._translate_page(page_dict, page_key)
+    def translatePage(self, project: ProjImgTrans, page_key: str) -> None:
+        def job():
+            try:
+                self._translate_page(project, page_key, emit_finished=False)
+            except Exception as e:
+                create_error_dialog(
+                    e,
+                    self.tr('Translation Failed.'),
+                    'TranslationFailed',
+                )
+            finally:
+                self.finish_translate_page.emit(page_key)
+
+        self.job = job
         self.start()
 
     def push_pagekey_queue(self, page_key: str):
@@ -472,7 +522,11 @@ class TranslateThread(ModuleThread):
             self.blockSignals(True)
             trans_success = True
             try:
-                self._translate_page(self.imgtrans_proj.pages, page_key, emit_finished=False)
+                trans_success = self._translate_page(
+                    self.imgtrans_proj,
+                    page_key,
+                    emit_finished=False,
+                )
             except Exception as e:
                 # TODO: allowing retry/skip/terminate
                 trans_success = False
@@ -488,8 +542,6 @@ class TranslateThread(ModuleThread):
                 # return
             self.blockSignals(False)
             self.finished_counter += 1
-            if trans_success:
-                self.imgtrans_proj.update_page_progress(page_key, RunStatus.FIN_TRANSLATE)
             self.progress_changed.emit(self.finished_counter)
 
             if not self.pipeline_finished() and delay > 0:
@@ -586,11 +638,36 @@ class ImgtransThread(QThread):
     def stopThread(self, timeout_ms: int = 3000) -> bool:
         return stop_qthread(self, timeout_ms)
 
-    def runBlktransPipeline(self, blk_list: List[TextBlock], tgt_img: np.ndarray, mode: int, blk_ids: List[int], tgt_mask):
-        self.job = lambda : self._blktrans_pipeline(blk_list, tgt_img, mode, blk_ids, tgt_mask)
+    def runBlktransPipeline(
+        self,
+        blk_list: List[TextBlock],
+        tgt_img: np.ndarray,
+        mode: int,
+        blk_ids: List[int],
+        tgt_mask,
+        *,
+        page_key: str,
+    ):
+        self.job = lambda: self._blktrans_pipeline(
+            blk_list,
+            tgt_img,
+            mode,
+            blk_ids,
+            tgt_mask,
+            page_key=page_key,
+        )
         self.start()
 
-    def _blktrans_pipeline(self, blk_list: List[TextBlock], tgt_img: np.ndarray, mode: int, blk_ids: List[int], tgt_mask):
+    def _blktrans_pipeline(
+        self,
+        blk_list: List[TextBlock],
+        tgt_img: np.ndarray,
+        mode: int,
+        blk_ids: List[int],
+        tgt_mask,
+        *,
+        page_key: str,
+    ):
         if mode >= 0 and mode < 3:
             try:
                 self.ocr_thread.module.run_ocr(tgt_img, blk_list, split_textblk=True)
@@ -599,7 +676,13 @@ class ImgtransThread(QThread):
             self.finish_blktrans.emit(mode, blk_ids)
 
         if mode != 0 and mode < 3:
-            self.translate_thread.module.translate_textblk_lst(blk_list)
+            translate_project_textblocks(
+                self.translate_thread.module,
+                self.imgtrans_proj,
+                page_key,
+                blk_list,
+                full_page=False,
+            )
             self.finish_blktrans.emit(mode, blk_ids)
         if mode > 1:
             im_h, im_w = tgt_img.shape[:2]
@@ -787,9 +870,14 @@ class ImgtransThread(QThread):
                 elif self.strict_stage_order or not low_vram_trans:
                     if low_vram_trans:
                         unload_modules(self, ['textdetector', 'ocr', 'inpainter'])
-                    self.translator.translate_textblk_lst(blk_list)
+                    translate_project_textblocks(
+                        self.translator,
+                        self.imgtrans_proj,
+                        imgname,
+                        blk_list,
+                        full_page=True,
+                    )
                     self.translate_counter += 1
-                    self.imgtrans_proj.update_page_progress(imgname, RunStatus.FIN_TRANSLATE)
                     self.update_translate_progress.emit(self.translate_counter)
                     if low_vram_trans:
                         unload_modules(self, ['translator'])
@@ -826,9 +914,14 @@ class ImgtransThread(QThread):
                     break
                     
                 blk_list = self.imgtrans_proj.pages[imgname]
-                self.translator.translate_textblk_lst(blk_list)
+                translate_project_textblocks(
+                    self.translator,
+                    self.imgtrans_proj,
+                    imgname,
+                    blk_list,
+                    full_page=True,
+                )
                 self.translate_counter += 1
-                self.imgtrans_proj.update_page_progress(imgname, RunStatus.FIN_TRANSLATE)
                 self.update_translate_progress.emit(self.translate_counter)
 
         if self.stop_requested and (not cfg_module.enable_translate or not self.parallel_trans):
@@ -1525,7 +1618,10 @@ class ModuleManager(QObject):
             return
         self._prepare_modules_then(
             [('translator', cfg_module.translator)],
-            lambda: self.translate_thread.translatePage(self.imgtrans_proj.pages, page_key),
+            lambda: self.translate_thread.translatePage(
+                self.imgtrans_proj,
+                page_key,
+            ),
         )
 
     def inpainterBusy(self):
@@ -1611,7 +1707,16 @@ class ModuleManager(QObject):
         LOGGER.info('Stopping image translation pipeline...')
         self.imgtrans_thread.requestStop()
 
-    def runBlktransPipeline(self, blk_list: List[TextBlock], tgt_img: np.ndarray, mode: int, blk_ids: List[int], tgt_mask):
+    def runBlktransPipeline(
+        self,
+        blk_list: List[TextBlock],
+        tgt_img: np.ndarray,
+        mode: int,
+        blk_ids: List[int],
+        tgt_mask,
+        *,
+        page_key: str,
+    ):
         if not self.terminateRunningThread():
             LOGGER.warning('Previous pipeline is still stopping; skip starting a block pipeline.')
             self.progress_msgbox.hide()
@@ -1625,10 +1730,26 @@ class ModuleManager(QObject):
             required_modules.append(('inpainter', cfg_module.inpainter))
         self._prepare_modules_then(
             required_modules,
-            lambda: self._startBlktransPipeline(blk_list, tgt_img, mode, blk_ids, tgt_mask),
+            lambda: self._startBlktransPipeline(
+                blk_list,
+                tgt_img,
+                mode,
+                blk_ids,
+                tgt_mask,
+                page_key=page_key,
+            ),
         )
 
-    def _startBlktransPipeline(self, blk_list: List[TextBlock], tgt_img: np.ndarray, mode: int, blk_ids: List[int], tgt_mask):
+    def _startBlktransPipeline(
+        self,
+        blk_list: List[TextBlock],
+        tgt_img: np.ndarray,
+        mode: int,
+        blk_ids: List[int],
+        tgt_mask,
+        *,
+        page_key: str,
+    ):
         if self.prepare_msgbox is not None and self.prepare_msgbox.isVisible():
             self.prepare_msgbox.done(0)
         self.progress_msgbox.hide_all_bars()
@@ -1640,7 +1761,15 @@ class ModuleManager(QObject):
             self.progress_msgbox.translate_bar.show()
         self.progress_msgbox.zero_progress()
         self.progress_msgbox.show()
-        self.imgtrans_thread.runBlktransPipeline(blk_list, tgt_img, mode, blk_ids, tgt_mask)
+        self.imgtrans_thread.imgtrans_proj = self.imgtrans_proj
+        self.imgtrans_thread.runBlktransPipeline(
+            blk_list,
+            tgt_img,
+            mode,
+            blk_ids,
+            tgt_mask,
+            page_key=page_key,
+        )
 
     def on_finish_blktrans_stage(self, stage: str, progress: int):
         if stage == 'ocr':
