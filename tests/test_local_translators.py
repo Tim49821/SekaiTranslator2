@@ -17,6 +17,12 @@ from modules.prepare_local_files import (
     ensure_module_files,
     should_prepare_hf_model,
 )
+from modules.context.glossary import GlossaryEntry
+from modules.context.history import (
+    HistoryPage,
+    HistoryWindowKey,
+    RequestContext,
+)
 from modules.translators import TRANSLATORS
 from modules.translators import gemma4_worker
 from modules.translators.trans_gemma4 import Gemma4E4BTranslator
@@ -112,7 +118,11 @@ class FakeLlama:
 
     def create_chat_completion(self, **kwargs):
         self.completion_calls.append(kwargs)
-        prompt = kwargs["messages"][1]["content"]
+        prompt = next(
+            message["content"]
+            for message in reversed(kwargs["messages"])
+            if message["role"] == "user"
+        )
         page_json = prompt.split("Page source texts:\n", 1)[1]
         items = json.loads(page_json)
         return {
@@ -139,7 +149,11 @@ class RetryThenSplitLlama(FakeLlama):
         self.completion_calls.append(kwargs)
         if len(self.completion_calls) <= 2:
             return {"choices": [{"message": {"content": "not json"}}]}
-        prompt = kwargs["messages"][1]["content"]
+        prompt = next(
+            message["content"]
+            for message in reversed(kwargs["messages"])
+            if message["role"] == "user"
+        )
         items = json.loads(prompt.split("Page source texts:\n", 1)[1])
         return {
             "choices": [
@@ -163,7 +177,11 @@ class RetryThenSplitLlama(FakeLlama):
 class SuspiciousRepairLlama(FakeLlama):
     def create_chat_completion(self, **kwargs):
         self.completion_calls.append(kwargs)
-        prompt = kwargs["messages"][1]["content"]
+        prompt = next(
+            message["content"]
+            for message in reversed(kwargs["messages"])
+            if message["role"] == "user"
+        )
         items = json.loads(prompt.split("Page source texts:\n", 1)[1])
         if len(self.completion_calls) == 1:
             translations = [
@@ -181,6 +199,18 @@ class SuspiciousRepairLlama(FakeLlama):
                 }
             ]
         }
+
+
+class HistoryBudgetLlama(FakeLlama):
+    def tokenize(self, serialized, add_bos=False):
+        text = serialized.decode("utf-8")
+        if "old target" in text:
+            token_count = 55
+        elif "recent target" in text:
+            token_count = 10
+        else:
+            token_count = 60
+        return list(range(token_count))
 
 
 class LocalTranslatorRegistrationTest(unittest.TestCase):
@@ -349,6 +379,33 @@ class GemmaTranslatorTest(unittest.TestCase):
         FakeLlama.init_calls = []
         FakeLlama.completion_calls = []
 
+    @staticmethod
+    def base_worker_payload():
+        return {
+            "model_path": "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf",
+            "model_quantization": "Q4_K_M",
+            "model_log_name": "Gemma4 GGUF",
+            "texts": ["line one"],
+            "source_lang": "Japanese",
+            "target_lang": "Korean",
+            "max_input_tokens": 4096,
+            "max_new_tokens": 64,
+            "context_tokens": 512,
+            "gpu_layers": 0,
+            "threads": 0,
+            "temperature": 0.15,
+            "top_p": 0.8,
+            "top_k": 32,
+            "thinking_mode": True,
+            "structure_retry_count": 1,
+            "chunk_context_cells": 2,
+            "style_guide": "",
+            "history_pages": [],
+            "history_token_budget": 0,
+            "glossary_json": "",
+            "glossary_mode": "matching",
+        }
+
     def test_subprocess_runtime_calls_worker_with_gguf_payload(self):
         stdout = '{"translations":["one",""]}'
         with patch("modules.translators.trans_gemma4.osp.isfile", return_value=True), \
@@ -367,11 +424,28 @@ class GemmaTranslatorTest(unittest.TestCase):
                     "top_k": 32,
                 },
             )
-            result = translator.translate(["line one", ""])
+            history_page = translator._render_history_page(
+                HistoryPage("001.png", ("Hero",), ("용사",))
+            )
+            request_context = RequestContext(
+                history=(history_page,),
+                glossary=(GlossaryEntry("Hero", "용사"),),
+                glossary_mode="matching",
+                history_budget=4096,
+                window_key=HistoryWindowKey(
+                    object(),
+                    (("model", "gemma"),),
+                ),
+                request_page_key="002.png",
+            )
+            result = translator._translate(
+                ["Hero", ""],
+                request_context=request_context,
+            )
 
         self.assertEqual(result, ["one", ""])
         payload = json.loads(run_mock.call_args.kwargs["input"])
-        self.assertEqual(payload["texts"], ["line one", ""])
+        self.assertEqual(payload["texts"], ["Hero", ""])
         self.assertEqual(payload["source_lang"], "Japanese")
         self.assertEqual(payload["target_lang"], "Korean")
         self.assertEqual(payload["model_path"], "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf")
@@ -383,6 +457,37 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(payload["structure_retry_count"], 1)
         self.assertEqual(payload["chunk_context_cells"], 2)
         self.assertIn("자연스러운 한국어", payload["style_guide"])
+        self.assertEqual(payload["history_token_budget"], 4096)
+        self.assertEqual(payload["history_pages"][0]["page_key"], "001.png")
+        self.assertEqual(
+            [
+                message["role"]
+                for message in payload["history_pages"][0]["messages"]
+            ],
+            ["user", "assistant"],
+        )
+        self.assertIn('"source":"Hero"', payload["glossary_json"])
+        self.assertEqual(payload["glossary_mode"], "matching")
+        self.assertIsNone(translator._history_window)
+
+    def test_gemma_context_params_are_fresh_and_independent_from_openai(self):
+        context_keys = (
+            "context mode",
+            "history token budget",
+            "glossary path",
+            "glossary mode",
+        )
+
+        for key in context_keys:
+            self.assertIn(key, Gemma4E4BTranslator.params)
+            self.assertIsNot(
+                Gemma4E4BTranslator.params[key],
+                OpenAILLMTranslator.params[key],
+            )
+        first = Gemma4E4BTranslator("日本語", "한국어")
+        second = Gemma4E4BTranslator("日本語", "한국어")
+        for key in context_keys:
+            self.assertIsNot(first.params[key], second.params[key])
 
     def test_legacy_top_sampling_names_are_migrated(self):
         stdout = '{"translations":["one"]}'
@@ -450,24 +555,8 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertIn("Gemma4 GGUF runtime is not configured", result[0])
 
     def test_worker_translates_full_page_in_one_generation(self):
-        payload = {
-            "model_path": "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf",
-            "texts": ["line one", "", "line two", "line three"],
-            "source_lang": "Japanese",
-            "target_lang": "Korean",
-            "max_input_tokens": 4096,
-            "max_new_tokens": 64,
-            "context_tokens": 512,
-            "gpu_layers": 0,
-            "threads": 0,
-            "temperature": 0.15,
-            "top_p": 0.8,
-            "top_k": 32,
-            "thinking_mode": True,
-            "structure_retry_count": 1,
-            "chunk_context_cells": 2,
-            "style_guide": "",
-        }
+        payload = self.base_worker_payload()
+        payload["texts"] = ["line one", "", "line two", "line three"]
         with patch("modules.translators.gemma4_worker.Path.is_file", return_value=True), \
              patch("modules.translators.gemma4_worker.Llama", FakeLlama), \
              patch("modules.translators.gemma4_worker.gc.collect") as collect_mock:
@@ -502,22 +591,11 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(cleaned, "안녕")
 
     def test_worker_splits_large_pages_by_max_input_tokens(self):
-        payload = {
-            "model_path": "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf",
+        payload = self.base_worker_payload()
+        payload.update({
             "texts": [f"長いセリフ{i} " + ("あ" * 240) for i in range(8)],
-            "source_lang": "Japanese",
-            "target_lang": "Korean",
             "max_input_tokens": 900,
-            "max_new_tokens": 64,
-            "context_tokens": 512,
-            "gpu_layers": 0,
-            "threads": 0,
-            "temperature": 0.15,
-            "thinking_mode": True,
-            "structure_retry_count": 1,
-            "chunk_context_cells": 2,
-            "style_guide": "",
-        }
+        })
         with patch("modules.translators.gemma4_worker.Path.is_file", return_value=True), \
              patch("modules.translators.gemma4_worker.Llama", FakeLlama):
             result = gemma4_worker.translate(payload)
@@ -528,22 +606,20 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertTrue(any("Nearby page context only" in prompt for prompt in prompts))
 
     def test_worker_retries_strict_then_splits_failed_structure(self):
-        payload = {
-            "model_path": "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf",
+        payload = self.base_worker_payload()
+        payload.update({
             "texts": ["a", "b", "c", "d"],
-            "source_lang": "Japanese",
-            "target_lang": "Korean",
-            "max_input_tokens": 4096,
-            "max_new_tokens": 64,
-            "context_tokens": 512,
-            "gpu_layers": 0,
-            "threads": 0,
-            "temperature": 0.15,
-            "thinking_mode": True,
-            "structure_retry_count": 1,
-            "chunk_context_cells": 2,
-            "style_guide": "",
-        }
+            "history_pages": [{
+                "page_key": "001.png",
+                "messages": [
+                    {"role": "user", "content": "previous source"},
+                    {"role": "assistant", "content": "recent target"},
+                ],
+            }],
+            "history_token_budget": 4096,
+            "glossary_json": '{"glossary":[{"source":"a","translation":"에이","note":""}]}',
+            "glossary_mode": "matching",
+        })
         with patch("modules.translators.gemma4_worker.Path.is_file", return_value=True), \
              patch("modules.translators.gemma4_worker.Llama", RetryThenSplitLlama):
             result = gemma4_worker.translate(payload)
@@ -552,24 +628,28 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(len(FakeLlama.completion_calls), 4)
         self.assertEqual(FakeLlama.completion_calls[1]["temperature"], 0.0)
         self.assertIn("strict retry", FakeLlama.completion_calls[1]["messages"][0]["content"])
+        for call in FakeLlama.completion_calls:
+            serialized = "\n".join(
+                message["content"] for message in call["messages"]
+            )
+            self.assertIn("recent target", serialized)
+            self.assertIn('"source":"a"', call["messages"][-1]["content"])
 
     def test_worker_repairs_suspicious_single_cell_translation(self):
-        payload = {
-            "model_path": "data/models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf",
+        payload = self.base_worker_payload()
+        payload.update({
             "texts": ["ありがとうありがとう", "大丈夫"],
-            "source_lang": "Japanese",
-            "target_lang": "Korean",
-            "max_input_tokens": 4096,
-            "max_new_tokens": 64,
-            "context_tokens": 512,
-            "gpu_layers": 0,
-            "threads": 0,
-            "temperature": 0.15,
-            "thinking_mode": True,
-            "structure_retry_count": 1,
-            "chunk_context_cells": 2,
-            "style_guide": "",
-        }
+            "history_pages": [{
+                "page_key": "001.png",
+                "messages": [
+                    {"role": "user", "content": "previous source"},
+                    {"role": "assistant", "content": "recent target"},
+                ],
+            }],
+            "history_token_budget": 4096,
+            "glossary_json": '{"glossary":[{"source":"ありがとう","translation":"고마워","note":""}]}',
+            "glossary_mode": "matching",
+        })
         with patch("modules.translators.gemma4_worker.Path.is_file", return_value=True), \
              patch("modules.translators.gemma4_worker.Llama", SuspiciousRepairLlama):
             result = gemma4_worker.translate(payload)
@@ -577,6 +657,101 @@ class GemmaTranslatorTest(unittest.TestCase):
         self.assertEqual(result, ["고마워", "괜찮아"])
         self.assertEqual(len(FakeLlama.completion_calls), 2)
         self.assertEqual(FakeLlama.completion_calls[1]["temperature"], 0.0)
+        for call in FakeLlama.completion_calls:
+            serialized = "\n".join(
+                message["content"] for message in call["messages"]
+            )
+            self.assertIn("recent target", serialized)
+            self.assertIn(
+                '"source":"ありがとう"',
+                call["messages"][-1]["content"],
+            )
+
+    def test_worker_places_full_glossary_before_history_and_current_page(self):
+        payload = self.base_worker_payload()
+        payload.update({
+            "history_pages": [{
+                "page_key": "001.png",
+                "messages": [
+                    {"role": "user", "content": "previous source"},
+                    {"role": "assistant", "content": "previous target"},
+                ],
+            }],
+            "history_token_budget": 4096,
+            "glossary_json": '{"glossary":[{"source":"Hero","translation":"용사","note":""}]}',
+            "glossary_mode": "all",
+        })
+
+        with patch("modules.translators.gemma4_worker.Path.is_file", return_value=True), \
+             patch("modules.translators.gemma4_worker.Llama", FakeLlama):
+            gemma4_worker.translate(payload)
+
+        messages = FakeLlama.completion_calls[0]["messages"]
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["system", "system", "user", "assistant", "user"],
+        )
+        self.assertIn("glossary", messages[1]["content"])
+        self.assertNotIn("glossary", messages[-1]["content"])
+
+    def test_worker_drops_oldest_whole_history_pages_before_current_chunk(self):
+        payload = self.base_worker_payload()
+        payload.update({
+            "max_input_tokens": 120,
+            "history_token_budget": 40,
+            "history_pages": [
+                {
+                    "page_key": "001.png",
+                    "messages": [
+                        {"role": "user", "content": "old " * 30},
+                        {"role": "assistant", "content": "old target " * 20},
+                    ],
+                },
+                {
+                    "page_key": "002.png",
+                    "messages": [
+                        {"role": "user", "content": "recent"},
+                        {"role": "assistant", "content": "recent target"},
+                    ],
+                },
+            ],
+        })
+
+        with patch("modules.translators.gemma4_worker.Path.is_file", return_value=True), \
+             patch("modules.translators.gemma4_worker.Llama", HistoryBudgetLlama):
+            gemma4_worker.translate(payload)
+
+        messages = FakeLlama.completion_calls[0]["messages"]
+        serialized = "\n".join(message["content"] for message in messages)
+        self.assertNotIn("old target", serialized)
+        self.assertIn("recent target", serialized)
+        self.assertIn("Page source texts", serialized)
+
+    def test_worker_keeps_current_page_and_glossary_when_history_cannot_fit(self):
+        payload = self.base_worker_payload()
+        payload.update({
+            "max_input_tokens": 60,
+            "history_token_budget": 4096,
+            "history_pages": [{
+                "page_key": "001.png",
+                "messages": [
+                    {"role": "user", "content": "previous source"},
+                    {"role": "assistant", "content": "recent target"},
+                ],
+            }],
+            "glossary_json": '{"glossary":[{"source":"line","translation":"줄","note":""}]}',
+            "glossary_mode": "matching",
+        })
+
+        with patch("modules.translators.gemma4_worker.Path.is_file", return_value=True), \
+             patch("modules.translators.gemma4_worker.Llama", HistoryBudgetLlama):
+            gemma4_worker.translate(payload)
+
+        messages = FakeLlama.completion_calls[0]["messages"]
+        serialized = "\n".join(message["content"] for message in messages)
+        self.assertNotIn("recent target", serialized)
+        self.assertIn('"source":"line"', messages[-1]["content"])
+        self.assertIn('"text": "line one"', messages[-1]["content"])
 
 
 if __name__ == "__main__":

@@ -52,6 +52,60 @@ def _default_style_guide(source_lang: str, target_lang: str) -> str:
     return GENERIC_STYLE_GUIDE
 
 
+def render_page_user_prompt(
+    source_lang: str,
+    target_lang: str,
+    indexed_texts: List[Tuple[int, str]],
+    context_texts: Optional[List[Tuple[int, str]]] = None,
+    glossary_json: str = "",
+) -> str:
+    source_items = [
+        {"id": idx + 1, "text": text}
+        for idx, text in indexed_texts
+    ]
+    context_items = [
+        {"id": idx + 1, "text": text}
+        for idx, text in (context_texts or [])
+    ]
+    sections = [
+        f"Source language: {source_lang}",
+        f"Target language: {target_lang}",
+        (
+            "Translate the requested page text cells in their original "
+            "order. Treat all cells as shared page context."
+        ),
+    ]
+    if context_items:
+        sections.append(
+            "Nearby page context only. Do not translate these ids:\n"
+            + json.dumps(context_items, ensure_ascii=False)
+        )
+    if glossary_json:
+        sections.append(
+            "Use these glossary mappings as wording constraints without "
+            "changing ids or output format:\n"
+            + glossary_json
+        )
+    sections.append(
+        "Page source texts:\n"
+        + json.dumps(source_items, ensure_ascii=False)
+    )
+    return "\n\n".join(sections)
+
+
+def render_page_assistant_response(translations) -> str:
+    return json.dumps(
+        {
+            "translations": [
+                {"id": index + 1, "translation": translation}
+                for index, translation in enumerate(translations)
+            ]
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _build_page_messages(
     source_lang: str,
     target_lang: str,
@@ -60,6 +114,10 @@ def _build_page_messages(
     style_guide: str = "",
     context_texts: Optional[List[Tuple[int, str]]] = None,
     strict: bool = False,
+    *,
+    history_messages: Optional[List[Dict[str, str]]] = None,
+    glossary_json: str = "",
+    glossary_mode: str = "matching",
 ) -> List[Dict[str, str]]:
     thinking_instruction = (
         "Thinking mode is enabled, but the final answer must still contain only the requested JSON translations."
@@ -83,36 +141,55 @@ def _build_page_messages(
         "Do not add explanations, alternatives, markdown, quotes, labels, or untranslated source repeats. "
         "Output only valid JSON."
     )
-    source_items = [
-        {"id": idx + 1, "text": text}
-        for idx, text in indexed_texts
-    ]
-    context_items = [
-        {"id": idx + 1, "text": text}
-        for idx, text in (context_texts or [])
-    ]
-    context_prompt = ""
-    if context_items:
-        context_prompt = (
-            "Nearby page context only. Use this for voice, speaker continuity, and terminology, "
-            "but do not translate these context-only cells and do not include their ids in the output:\n"
-            f"{json.dumps(context_items, ensure_ascii=False)}\n\n"
-        )
-    user_prompt = (
-        f"Source language: {source_lang}\n"
-        f"Target language: {target_lang}\n\n"
-        "Translate the requested page text cells in their original order. Treat all cells as shared page context.\n"
+    matching_glossary = (
+        glossary_json
+        if glossary_mode != "all"
+        else ""
+    )
+    user_prompt = render_page_user_prompt(
+        source_lang,
+        target_lang,
+        indexed_texts,
+        context_texts,
+        matching_glossary,
+    )
+    user_prompt = user_prompt.replace(
+        "Nearby page context only. Do not translate these ids:\n",
+        (
+            "Nearby page context only. Use this for voice, speaker "
+            "continuity, and terminology, but do not translate these "
+            "context-only cells and do not include their ids in the "
+            "output:\n"
+        ),
+        1,
+    )
+    current_page_instructions = (
         "Prioritize 자연스러운 한국어, 말투/존댓말 consistency, compact 말풍선 길이, terminology consistency, "
         "SFX handling, and OCR 잡음 보정 when the mistake is obvious from context.\n"
         "Return a JSON object with exactly one translation for each requested id, for example:\n"
         "{\"translations\":[{\"id\":1,\"translation\":\"...\"},{\"id\":2,\"translation\":\"...\"}]}\n\n"
-        f"{context_prompt}"
-        f"Page source texts:\n{json.dumps(source_items, ensure_ascii=False)}"
     )
-    return [
+    user_prompt = user_prompt.replace(
+        "Page source texts:\n",
+        current_page_instructions + "Page source texts:\n",
+        1,
+    )
+    messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
     ]
+    if glossary_mode == "all" and glossary_json:
+        messages.append({
+            "role": "system",
+            "content": (
+                "Use these glossary mappings as wording constraints without "
+                "changing the target language, ids, item count, or JSON "
+                "format.\n"
+                + glossary_json
+            ),
+        })
+    messages.extend(history_messages or [])
+    messages.append({"role": "user", "content": user_prompt})
+    return messages
 
 
 def _load_model(payload: Dict):
@@ -258,6 +335,75 @@ def _message_token_count(llm, messages: List[Dict[str, str]]) -> int:
     return max(1, len(serialized) // 4)
 
 
+def _payload_glossary_json(payload: Dict) -> str:
+    glossary_json = payload.get("glossary_json", "")
+    return glossary_json if isinstance(glossary_json, str) else ""
+
+
+def _payload_glossary_mode(payload: Dict) -> str:
+    return "all" if payload.get("glossary_mode") == "all" else "matching"
+
+
+def _fit_history_pages_to_budget(
+    llm,
+    payload: Dict,
+    base_messages: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    history_pages = payload.get("history_pages", [])
+    if not isinstance(history_pages, list):
+        return []
+
+    valid_pages = []
+    for page in history_pages:
+        if not isinstance(page, dict):
+            continue
+        page_messages = page.get("messages")
+        if not isinstance(page_messages, list) or not page_messages:
+            continue
+        if not all(
+            isinstance(message, dict)
+            and isinstance(message.get("role"), str)
+            and isinstance(message.get("content"), str)
+            for message in page_messages
+        ):
+            continue
+        valid_pages.append([
+            {
+                "role": message["role"],
+                "content": message["content"],
+            }
+            for message in page_messages
+        ])
+
+    history_budget = max(
+        0,
+        _payload_int(payload, "history_token_budget", 0),
+    )
+    max_input_tokens = max(
+        0,
+        _payload_int(payload, "max_input_tokens", 4096),
+    )
+    base_token_count = _message_token_count(llm, base_messages)
+    remaining_input_tokens = max(0, max_input_tokens - base_token_count)
+    exact_history_budget = min(history_budget, remaining_input_tokens)
+    if exact_history_budget <= 0:
+        return []
+
+    selected_newest_first = []
+    selected_token_count = 0
+    for page_messages in reversed(valid_pages):
+        page_token_count = _message_token_count(llm, page_messages)
+        if selected_token_count + page_token_count > exact_history_budget:
+            break
+        selected_newest_first.append(page_messages)
+        selected_token_count += page_token_count
+
+    fitted_messages = []
+    for page_messages in reversed(selected_newest_first):
+        fitted_messages.extend(page_messages)
+    return fitted_messages
+
+
 def _context_for_chunk(
     indexed_texts: List[Tuple[int, str]],
     chunk: List[Tuple[int, str]],
@@ -291,6 +437,9 @@ def _fit_context_to_budget(
             payload.get("style_guide", ""),
             context_texts,
             strict=strict,
+            history_messages=[],
+            glossary_json=_payload_glossary_json(payload),
+            glossary_mode=_payload_glossary_mode(payload),
         )
         if _message_token_count(llm, messages) <= budget:
             break
@@ -306,6 +455,9 @@ def _build_target_chunks(llm, payload: Dict, indexed_texts: List[Tuple[int, str]
         indexed_texts,
         bool(payload["thinking_mode"]),
         payload.get("style_guide", ""),
+        history_messages=[],
+        glossary_json=_payload_glossary_json(payload),
+        glossary_mode=_payload_glossary_mode(payload),
     )
     if _message_token_count(llm, full_messages) <= budget:
         return [indexed_texts]
@@ -320,6 +472,9 @@ def _build_target_chunks(llm, payload: Dict, indexed_texts: List[Tuple[int, str]
             candidate,
             bool(payload["thinking_mode"]),
             payload.get("style_guide", ""),
+            history_messages=[],
+            glossary_json=_payload_glossary_json(payload),
+            glossary_mode=_payload_glossary_mode(payload),
         )
         if current and _message_token_count(llm, messages) > budget:
             chunks.append(current)
@@ -339,7 +494,7 @@ def _create_completion(
     strict: bool = False,
 ) -> List[str]:
     expected_ids = [idx + 1 for idx, _ in indexed_texts]
-    messages = _build_page_messages(
+    base_messages = _build_page_messages(
         payload["source_lang"],
         payload["target_lang"],
         indexed_texts,
@@ -347,6 +502,19 @@ def _create_completion(
         payload.get("style_guide", ""),
         context_texts,
         strict=strict,
+        history_messages=[],
+        glossary_json=_payload_glossary_json(payload),
+        glossary_mode=_payload_glossary_mode(payload),
+    )
+    history_messages = _fit_history_pages_to_budget(
+        llm,
+        payload,
+        base_messages,
+    )
+    messages = (
+        base_messages[:-1]
+        + history_messages
+        + base_messages[-1:]
     )
     temperature = 0.0 if strict else _payload_float(payload, "temperature", 0.0)
     kwargs = {
@@ -477,6 +645,10 @@ def translate(payload: Dict) -> List[str]:
     payload.setdefault("structure_retry_count", 1)
     payload.setdefault("chunk_context_cells", 2)
     payload.setdefault("style_guide", "")
+    payload.setdefault("history_pages", [])
+    payload.setdefault("history_token_budget", 0)
+    payload.setdefault("glossary_json", "")
+    payload.setdefault("glossary_mode", "matching")
     llm = _load_model(payload)
     try:
         indexed_texts = [

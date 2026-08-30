@@ -22,6 +22,7 @@ from modules.context.history import (
 )
 from modules.context.params import build_llm_context_params
 from modules.translators.base import BaseTranslator
+from modules.translators.trans_gemma4 import Gemma4E4BTranslator
 from modules.translators.trans_llm_api_json import (
     GoogleLLMTranslator,
     GrokLLMTranslator,
@@ -354,6 +355,111 @@ class LLMContextAdapterTest(unittest.TestCase):
         translator.set_target("English")
         project._image_info["001.png"]["translation_target"] = "English"
         project._image_info["002.png"]["translation_target"] = "English"
+
+
+class GemmaContextAdapterTest(unittest.TestCase):
+    def make_translator(self):
+        return Gemma4E4BTranslator(
+            "日本語",
+            "한국어",
+            **{"worker python": "/fake/python"},
+        )
+
+    def request_context(self, translator):
+        rendered = translator._render_history_page(
+            HistoryPage("001.png", ("Hero",), ("용사",))
+        )
+        return RequestContext(
+            history=(rendered,),
+            glossary=(GlossaryEntry("Hero", "용사"),),
+            glossary_mode="matching",
+            history_budget=4096,
+            window_key=HistoryWindowKey(object(), (("model", "gemma"),)),
+            request_page_key="002.png",
+        )
+
+    def test_rendered_history_uses_plain_stable_glossary_free_messages(self):
+        translator = self.make_translator()
+
+        rendered = translator._render_history_page(
+            HistoryPage("001.png", ("Hero", "Mage"), ("용사", "마법사"))
+        )
+
+        self.assertEqual(
+            [role for role, _content in rendered.messages],
+            ["user", "assistant"],
+        )
+        self.assertTrue(
+            all(
+                isinstance(role, str) and isinstance(content, str)
+                for role, content in rendered.messages
+            )
+        )
+        self.assertNotIn("glossary", rendered.messages[0][1].lower())
+        self.assertEqual(
+            rendered.messages[1][1],
+            '{"translations":[{"id":1,"translation":"용사"},'
+            '{"id":2,"translation":"마법사"}]}',
+        )
+
+    def test_successful_full_result_commits_logical_history_window(self):
+        translator = self.make_translator()
+        context = self.request_context(translator)
+        translator._history_window = object()
+        completed = SimpleNamespace(
+            stdout='{"translations":["현재"]}',
+            stderr="",
+            returncode=0,
+        )
+
+        with patch(
+            "modules.translators.trans_gemma4.osp.isfile",
+            return_value=True,
+        ), patch(
+            "modules.translators.trans_gemma4.subprocess.run",
+            return_value=completed,
+        ):
+            result = translator._translate(
+                ["Current"],
+                request_context=context,
+                page_key="002.png",
+                commit_history_window=True,
+            )
+
+        self.assertEqual(result, ["현재"])
+        self.assertEqual(translator._history_window.request_page_key, "002.png")
+        self.assertEqual(
+            [page.page_key for page in translator._history_window.history],
+            ["001.png"],
+        )
+
+    def test_error_translation_does_not_commit_logical_history_window(self):
+        translator = self.make_translator()
+        context = self.request_context(translator)
+        committed_before = object()
+        translator._history_window = committed_before
+        completed = SimpleNamespace(
+            stdout='{"translations":["[ERROR: StructureError]"]}',
+            stderr="",
+            returncode=0,
+        )
+
+        with patch(
+            "modules.translators.trans_gemma4.osp.isfile",
+            return_value=True,
+        ), patch(
+            "modules.translators.trans_gemma4.subprocess.run",
+            return_value=completed,
+        ):
+            result = translator._translate(
+                ["Current"],
+                request_context=context,
+                page_key="002.png",
+                commit_history_window=True,
+            )
+
+        self.assertEqual(result, ["[ERROR: StructureError]"])
+        self.assertIs(translator._history_window, committed_before)
 
 
 class RemoteLLMContextTest(unittest.TestCase):

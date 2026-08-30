@@ -6,8 +6,22 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .base import BaseTranslator, register_translator
+from . import gemma4_worker
+from .base import (
+    BaseTranslator,
+    register_translator,
+    translation_is_successful,
+)
 from ..base import DEVICE_SELECTOR
+from ..context.adapter import LLMContextAdapterMixin
+from ..context.glossary import render_glossary
+from ..context.history import (
+    HistoryPage,
+    RenderedHistoryPage,
+    RequestContext,
+)
+from ..context.params import build_llm_context_params
+from ..context.token_usage import messages_token_count
 
 
 MODEL_REPO_ID = "unsloth/gemma-4-E4B-it-GGUF"
@@ -78,7 +92,7 @@ GEMMA_LANG_MAP = {
 }
 
 
-class LocalGGUFTranslator(BaseTranslator):
+class LocalGGUFTranslator(LLMContextAdapterMixin, BaseTranslator):
     concate_text = False
     cht_require_convert = True
     model_log_name = "Local GGUF"
@@ -98,6 +112,7 @@ class LocalGGUFTranslator(BaseTranslator):
 
     def _setup_translator(self):
         self.lang_map.update(GEMMA_LANG_MAP)
+        self._history_window = None
 
     @property
     def thinking_mode(self) -> bool:
@@ -174,7 +189,60 @@ class LocalGGUFTranslator(BaseTranslator):
             return self.get_param_value(param_key)
         return default
 
-    def _translate(self, src_list: List[str]) -> List[str]:
+    def _context_model_name(self) -> str:
+        return self.model_filename
+
+    def _context_prompt_signature(self) -> str:
+        return json.dumps(
+            {
+                "thinking_mode": self.thinking_mode,
+                "style_guide": str(
+                    self._optional_param_value("style guide", "")
+                ),
+                "prompt_version": 1,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _render_history_page(
+        self,
+        page: HistoryPage,
+    ) -> RenderedHistoryPage:
+        messages = [
+            {
+                "role": "user",
+                "content": gemma4_worker.render_page_user_prompt(
+                    self.lang_map[self.lang_source],
+                    self.lang_map[self.lang_target],
+                    list(enumerate(page.sources)),
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": gemma4_worker.render_page_assistant_response(
+                    page.translations
+                ),
+            },
+        ]
+        return RenderedHistoryPage(
+            page,
+            tuple(
+                (message["role"], message["content"])
+                for message in messages
+            ),
+            messages_token_count(messages, self.model_filename),
+        )
+
+    def _translate(
+        self,
+        src_list: List[str],
+        *,
+        request_context: Optional[RequestContext] = None,
+        page_key=None,
+        commit_history_window: bool = False,
+    ) -> List[str]:
         if not src_list:
             return []
 
@@ -202,6 +270,22 @@ class LocalGGUFTranslator(BaseTranslator):
                 ),
             )
 
+        history_pages = []
+        if request_context is not None:
+            history_pages = [
+                {
+                    "page_key": page.page_key,
+                    "messages": [
+                        {"role": role, "content": content}
+                        for role, content in page.messages
+                    ],
+                }
+                for page in request_context.history
+            ]
+        selected_glossary = self._selected_glossary(
+            request_context,
+            src_list,
+        )
         payload = {
             "model_path": model_path,
             "model_quantization": model_quantization,
@@ -221,6 +305,18 @@ class LocalGGUFTranslator(BaseTranslator):
             "structure_retry_count": int(self._optional_param_value("structure retry count", 1)),
             "chunk_context_cells": int(self._optional_param_value("chunk context cells", 2)),
             "style_guide": str(self._optional_param_value("style guide", "")),
+            "history_pages": history_pages,
+            "history_token_budget": (
+                request_context.history_budget
+                if request_context is not None
+                else 0
+            ),
+            "glossary_json": render_glossary(selected_glossary),
+            "glossary_mode": (
+                request_context.glossary_mode
+                if request_context is not None
+                else "matching"
+            ),
         }
 
         try:
@@ -262,7 +358,19 @@ class LocalGGUFTranslator(BaseTranslator):
                 f"{type(self).model_log_name} subprocess returned invalid translation payload.",
             )
 
-        return [text if isinstance(text, str) else "" for text in translations]
+        translations = [
+            text if isinstance(text, str) else ""
+            for text in translations
+        ]
+        if (
+            commit_history_window
+            and all(
+                translation_is_successful(source, translation)
+                for source, translation in zip(src_list, translations)
+            )
+        ):
+            self._commit_request_context(request_context)
+        return translations
 
 
 @register_translator("Gemma 4 E4B-it")
@@ -364,4 +472,5 @@ class Gemma4E4BTranslator(LocalGGUFTranslator):
             },
             "description": "Select, add, replace, or delete reusable Gemma translation style guides.",
         },
+        **build_llm_context_params(),
     }
