@@ -172,6 +172,22 @@ class TranslatorContextBoundaryTest(unittest.TestCase):
 
         self.assertFalse(success)
 
+    def test_truncated_postprocess_results_are_not_successful(self):
+        translator = RecordingTranslator("日本語", "한국어")
+        blocks = [TextBlock(text=["source"])]
+
+        def truncate_translations(translations, **kwargs):
+            translations.clear()
+
+        with patch.object(
+            translator,
+            "_postprocess_hooks",
+            OrderedDict((("truncate", truncate_translations),)),
+        ):
+            success = translator.translate_textblk_lst(blocks)
+
+        self.assertFalse(success)
+
     def test_error_markers_and_empty_outputs_are_not_successful(self):
         self.assertTrue(translation_is_successful("source", "target"))
         self.assertFalse(translation_is_successful("source", ""))

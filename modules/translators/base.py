@@ -289,7 +289,7 @@ class BaseTranslator(BaseModule):
         for tr, blk in zip(translations, textblk_lst):
             blk.translation = tr
 
-        return all(
+        return len(translations) == len(original_sources) and all(
             translation_is_successful(source, translation)
             for source, translation in zip(original_sources, translations)
         )
