@@ -31,7 +31,7 @@ The five fixed remote LLM translators listed below and **Gemma 4 E4B-it** expose
 | `glossary path` | UTF-8 `.json`, `.txt`, or `.tsv` file | Empty | Selects a glossary file; an empty path disables glossary loading. |
 | `glossary mode` | `matching`, `all` | `matching` | `matching` sends terms found on the current page; `all` sends every term. |
 
-History is rebuilt from completed project pages at runtime and is not written as chat messages into the project file. Each history page remains an indivisible source/translation example: the complete page is either retained or evicted. Matching glossary entries are sent with the current-page prompt, while an `all` glossary is sent as a full constraint before history. Missing or invalid glossary files (including unreadable, unsupported, malformed, or conflicting files) stop the request before the provider or Gemma worker runs.
+History is rebuilt from completed, target-compatible project pages at runtime and is not written as chat messages into the project file. Each history page remains an indivisible source/translation example: the complete page is either retained or evicted. Matching glossary entries are sent with the current-page prompt, while an `all` glossary is sent as a full constraint before history. Missing or invalid glossary files (including unreadable, unsupported, malformed, or conflicting files) stop the request before the provider or Gemma worker runs.
 
 Glossary files must be UTF-8. Supported examples follow.
 
