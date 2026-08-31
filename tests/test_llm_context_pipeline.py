@@ -84,7 +84,6 @@ class LLMContextPipelineTest(unittest.TestCase):
         textdetect_thread = TextDetectThread()
         ocr_thread = OCRThread()
         ocr_thread.module = SimpleNamespace(run_ocr=MagicMock())
-        ocr_thread.ocr = ocr_thread.module
         translate_thread = TranslateThread()
         translate_thread.translator = translator
         translate_thread.module = translator

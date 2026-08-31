@@ -15,6 +15,7 @@ from utils.registry import ModuleSpec
 from utils.torch_install_helper import detect_nvidia_gpus
 
 from .base import MODULE_ROOT, MODULE_SCRIPTS
+from .context.params import build_llm_context_params
 
 
 UNKNOWN = object()
@@ -485,6 +486,12 @@ class SafeEval:
                     value = self.visit(kw.value)
                     not_supported = [] if value is UNKNOWN else value
             return _device_selector(not_supported)
+        if (
+            func_name == 'build_llm_context_params'
+            and not args
+            and not node.keywords
+        ):
+            return build_llm_context_params()
         if func_name == '_build_fixed_provider_params' and len(args) in {3, 4}:
             base_params = self.env.get('LLM_API_Translator_PARAMS') or self.env.get('LLM_OCR_PARAMS')
             if isinstance(base_params, dict):
