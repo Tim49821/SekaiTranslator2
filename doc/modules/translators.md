@@ -1,13 +1,12 @@
 # Ballon Translator: Translation Modules
 
-*   Current codebase translators include Google, Papago, Gemma 4 E4B-it, and OpenAI-compatible LLM providers.
+*   Current codebase translators include Google, Papago, and OpenAI-compatible LLM providers.
 
 [**Table of Contents**](#table-of-contents)
 - [Ballon Translator: Translation Modules](#ballon-translator-translation-modules)
   - [LLM (Large Language Models)](#llm-large-language-models)
     - [Translation Context and Glossaries](#translation-context-and-glossaries)
     - [OpenAI-Compatible LLM Providers](#openai-compatible-llm-providers)
-    - [Local GGUF Translators](#local-gguf-translators)
   - [Other Translators](#other-translators)
     - [Google](#google)
     - [Papago](#papago)
@@ -22,7 +21,7 @@ The current LLM path uses JSON-structured responses. Each request asks the model
 
 ### Translation Context and Glossaries
 
-The five fixed remote LLM translators listed below and **Gemma 4 E4B-it** expose the same optional context controls. The settings are stored independently for each translator.
+The five fixed remote LLM translators listed below expose the same optional context controls. The settings are stored independently for each translator.
 
 | Setting | Values | Default | Behavior |
 |---|---|---|---|
@@ -31,7 +30,7 @@ The five fixed remote LLM translators listed below and **Gemma 4 E4B-it** expose
 | `glossary path` | UTF-8 `.json`, `.txt`, or `.tsv` file | Empty | Selects a glossary file; an empty path disables glossary loading. |
 | `glossary mode` | `matching`, `all` | `matching` | `matching` sends terms found on the current page; `all` sends every term. |
 
-History is rebuilt from completed, target-compatible project pages at runtime and is not written as chat messages into the project file. Each history page remains an indivisible source/translation example: the complete page is either retained or evicted. Matching glossary entries are sent with the current-page prompt, while an `all` glossary is sent as a full constraint before history. Missing or invalid glossary files (including unreadable, unsupported, malformed, or conflicting files) stop the request before the provider or Gemma worker runs.
+History is rebuilt from completed, target-compatible project pages at runtime and is not written as chat messages into the project file. Each history page remains an indivisible source/translation example: the complete page is either retained or evicted. Matching glossary entries are sent with the current-page prompt, while an `all` glossary is sent as a full constraint before history. Missing or invalid glossary files (including unreadable, unsupported, malformed, or conflicting files) stop the request before the provider request runs.
 
 Glossary files must be UTF-8. Supported examples follow.
 
@@ -102,33 +101,6 @@ The following modules are provider-specific presets over the same OpenAI-compati
 *   **history token budget:** `4096` by default; see [Translation Context and Glossaries](#translation-context-and-glossaries).
 *   **glossary path:** Empty by default; accepts UTF-8 `.json`, `.txt`, or `.tsv`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
 *   **glossary mode:** `matching` (default) or `all`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
-
-### Local GGUF Translators
-
-These modules run a local `llama-cpp-python` worker subprocess and release model memory after each translation call.
-
-*   **Gemma 4 E4B-it**
-    *   Model repo: `unsloth/gemma-4-E4B-it-GGUF`
-    *   Supported quantizations: `Q4_K_M`, `Q6_K_M`
-    *   Setup helper: `python scripts/setup_gemma4_runtime.py --model gemma4 --download-model`
-
-**Settings Fields:**
-
-*   **worker python:** Optional Python executable for the isolated runtime. Empty uses the app default under `data/models/gemma-4-runtime`.
-*   **worker timeout:** Maximum seconds for one worker subprocess call.
-*   **low vram mode:** Unloads other models before translation when needed.
-*   **max input tokens / max new tokens / context tokens:** Prompt and generation budget controls.
-*   **gpu layers / threads:** `llama.cpp` runtime controls.
-*   **temperature / top_p / top_k:** Sampling controls.
-*   **thinking mode:** Allows thinking-style prompting while still constraining output to structured page translations.
-*   **structure retry count / chunk context cells:** Recovery behavior for malformed JSON or overlarge pages.
-*   **style guide / style guide presets:** Reusable translation style instructions.
-*   **context mode:** `page` (default) or `history`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
-*   **history token budget:** `4096` by default; see [Translation Context and Glossaries](#translation-context-and-glossaries).
-*   **glossary path:** Empty by default; accepts UTF-8 `.json`, `.txt`, or `.tsv`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
-*   **glossary mode:** `matching` (default) or `all`; see [Translation Context and Glossaries](#translation-context-and-glossaries).
-
----
 
 ## Other Translators
 

@@ -345,6 +345,11 @@ class ProgramConfig(Config):
         if 'module' in config_dict:
             module_cfg = config_dict['module']
             trans_params = module_cfg['translator_params']
+            retired_gemma_translator = 'Gemma 4 E4B-it'
+            if module_cfg.get('translator') == retired_gemma_translator:
+                module_cfg['translator'] = 'google'
+            trans_params.pop(retired_gemma_translator, None)
+
             if 'LLM_API_Translator' in trans_params:
                 old_llm_params = trans_params.pop('LLM_API_Translator')
                 provider_value = None

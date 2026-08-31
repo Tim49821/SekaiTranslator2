@@ -42,9 +42,7 @@ class LazyRuntimeTest(unittest.TestCase):
                 assert isinstance(spec, ModuleSpec), (key, type(spec))
                 assert spec.params, key
 
-            gemma = modules.TRANSLATORS.get('Gemma 4 E4B-it')
             llm_translator = modules.TRANSLATORS.get('LLM OpenAI')
-            assert gemma.supported_src_list and gemma.supported_tgt_list
             assert llm_translator.supported_src_list and llm_translator.supported_tgt_list
 
             expected_efforts = ['default', 'minimal', 'low', 'medium', 'high']
