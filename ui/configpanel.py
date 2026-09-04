@@ -1,12 +1,12 @@
 from typing import List, Union, Tuple
 
-from qtpy.QtWidgets import QPushButton, QKeySequenceEdit, QLayout, QGridLayout, QHBoxLayout, QVBoxLayout, QTreeView, QWidget, QLabel, QSizePolicy, QSpacerItem, QCheckBox, QSplitter, QScrollArea, QLineEdit
+from qtpy.QtWidgets import QPushButton, QKeySequenceEdit, QLayout, QGridLayout, QHBoxLayout, QVBoxLayout, QTreeView, QWidget, QLabel, QSizePolicy, QSpacerItem, QCheckBox, QScrollArea, QLineEdit
 from qtpy.QtCore import Qt, Signal, QSize, QEvent, QItemSelection
 from qtpy.QtGui import QStandardItem, QStandardItemModel, QMouseEvent, QFont, QIntValidator, QValidator, QFocusEvent
 
 from .custom_widget import ConfigComboBox, Widget
 from utils.config import pcfg
-from utils import shared as C
+from .settings_widgets import SettingsToggle, settings_icon, settings_stylesheet, settings_row
 from utils.shared import CONFIG_FONTSIZE_CONTENT, CONFIG_FONTSIZE_HEADER, CONFIG_FONTSIZE_TABLE, CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_LONG, CONFIG_COMBOBOX_MIDEAN
 from utils.version import APP_VERSION
 from utils.network_mirrors import (
@@ -87,6 +87,7 @@ class ConfigTextLabel(QLabel):
         self.setFont(font)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.setOpenExternalLinks(True)
+        self.setWordWrap(True)
 
     def setActiveBackground(self):
         self.setStyleSheet("background-color:rgba(30, 147, 229, 51);")
@@ -94,7 +95,7 @@ class ConfigTextLabel(QLabel):
 
 class ConfigSubBlock(Widget):
     pressed = Signal(int, int)
-    def __init__(self, widget: Union[QWidget, QLayout], name: str = None, discription: str = None, vertical_layout=True, insert_stretch: bool = False, content_margins = (24, 6, 24, 6)) -> None:
+    def __init__(self, widget: Union[QWidget, QLayout], name: str = None, discription: str = None, vertical_layout=True, insert_stretch: bool = False, content_margins = (0, 4, 0, 4)) -> None:
         super().__init__()
         self.idx0: int = None
         self.idx1: int = None
@@ -102,17 +103,19 @@ class ConfigSubBlock(Widget):
             layout = QVBoxLayout(self)
         else:
             layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
         self.name = name
         if name is not None:
             textlabel = ConfigTextLabel(name, CONFIG_FONTSIZE_CONTENT, QFont.Weight.Normal)
             self.name_label = textlabel
             layout.addWidget(textlabel)
+            if not vertical_layout:
+                layout.setStretch(0, 1)
         if discription is not None:
             layout.addWidget(ConfigTextLabel(discription, CONFIG_FONTSIZE_CONTENT-2))
-        if insert_stretch:
-            layout.insertStretch(-1)
         if isinstance(widget, QWidget):
-            layout.addWidget(widget)
+            layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight if name and not vertical_layout else Qt.AlignmentFlag(0))
         else:
             layout.addLayout(widget)
         self.widget = widget
@@ -123,17 +126,17 @@ class ConfigSubBlock(Widget):
         self.idx1 = idx1
 
     def enterEvent(self, e: QEvent) -> None:
-        self.pressed.emit(self.idx0, self.idx1)
         return super().enterEvent(e)
     
 
 def combobox_with_label(sel: List[str], name: str, discription: str = None, vertical_layout: bool = False, target_block: QWidget = None, fix_size: bool = True, parent: QWidget = None, insert_stretch: bool = False) -> Tuple[ConfigComboBox, QWidget]:
-    combox = ConfigComboBox(fix_size=fix_size, scrollWidget=parent)
+    combox = ConfigComboBox(fix_size=False, scrollWidget=parent)
     combox.addItems(sel)
+    combox.setFixedWidth(200)
+    combox.setFixedHeight(34)
     if target_block is None:
         sublock = ConfigSubBlock(combox, name, discription, vertical_layout=vertical_layout, insert_stretch=insert_stretch)
-        sublock.layout().setAlignment(Qt.AlignmentFlag.AlignLeft)
-        sublock.layout().setSpacing(20)
+        sublock.layout().setSpacing(16)
         return combox, sublock
     else:
         layout = target_block.layout()
@@ -143,21 +146,11 @@ def combobox_with_label(sel: List[str], name: str, discription: str = None, vert
         return combox, target_block
     
 def checkbox_with_label(name: str, discription: str = None, target_block: QWidget = None):
-    checkbox = QCheckBox()
-    if discription is not None:
-        font = checkbox.font()
-        font.setPointSizeF(CONFIG_FONTSIZE_CONTENT * 0.8)
-        checkbox.setFont(font)
-        checkbox.setText(discription)
-        vertical_layout = True
-    else:
-        vertical_layout = False
-
+    checkbox = SettingsToggle()
+    checkbox.setFixedSize(42, 26)
+    checkbox.setAccessibleName(name)
     if target_block is None:
-        sublock = ConfigSubBlock(checkbox, name, vertical_layout=vertical_layout)
-        if vertical_layout is False:
-            sublock.layout().addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding))
-        target_block = sublock
+        target_block = ConfigSubBlock(settings_row(name, checkbox, description=discription))
     return checkbox, target_block
     
 
@@ -168,9 +161,12 @@ class ConfigBlock(Widget):
     def __init__(self, header: str, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.header = ConfigTextLabel(header, CONFIG_FONTSIZE_HEADER)
+        self.header.setObjectName('SettingsPageHeading')
         self.vlayout = QVBoxLayout(self)
         self.vlayout.addWidget(self.header)
-        self.setContentsMargins(24, 24, 24, 24)
+        self.setContentsMargins(28, 8, 28, 24)
+        self.vlayout.setContentsMargins(0, 0, 0, 0)
+        self.vlayout.setSpacing(8)
         self.label_list = []
         self.subblock_list = []
         self.index: int = 0
@@ -191,6 +187,7 @@ class ConfigBlock(Widget):
 
     def addTextLabel(self, text: str = None):
         label = ConfigTextLabel(text, CONFIG_FONTSIZE_HEADER)
+        label.setObjectName('SettingsPageHeading')
         self.vlayout.addWidget(label)
         self.label_list.append(label)
 
@@ -242,18 +239,30 @@ class ConfigContent(QScrollArea):
         self.config_block_list.append(block)
 
     def setActiveLabel(self, idx0: int, idx1: int):
-        if self.active_label is not None:
-            self.deactiveLabel()
-        block = self.config_block_list[idx0]
-        if idx1 >= 0:
-            self.active_label = block.label_list[idx1]
-        else:
-            self.active_label = block.header
-        self.active_label.setActiveBackground()
-        if C.USE_PYSIDE6:
-            self.ensureWidgetVisible(self.active_label, ymargin=self.active_label.height() * 7)
-        else:
-            self.ensureWidgetVisible(self.active_label, yMargin=self.active_label.height() * 7)
+        # Retain the real controls and their signal connections, but present one
+        # section at a time. No scroll-to-anchor navigation or hover selection.
+        for block_index, block in enumerate(self.config_block_list):
+            if not hasattr(block, '_section_items'):
+                section = -1
+                block._section_items = []
+                for i in range(block.vlayout.count()):
+                    widget = block.vlayout.itemAt(i).widget()
+                    if widget is None:
+                        continue
+                    if widget in block.label_list:
+                        section = block.label_list.index(widget)
+                    block._section_items.append((widget, section, not widget.isHidden()))
+            overview = any(section == -1 and widget is not block.header
+                           for widget, section, _ in block._section_items)
+            for widget, section, enabled in block._section_items:
+                selected = section == idx1 or (idx1 == -1 and not overview)
+                if widget is block.header or (idx1 >= 0 and widget in block.label_list):
+                    selected = False
+                widget.setVisible(enabled and selected)
+            block.setVisible(block_index == idx0)
+        self.vlayout.activate()
+        self.verticalScrollBar().setValue(0)
+        self.horizontalScrollBar().setValue(0)
 
     def deactiveLabel(self):
         if self.active_label is not None:
@@ -265,7 +274,7 @@ class TableItem(QStandardItem):
     def __init__(self, text, fontsize):
         super().__init__()
         font = self.font()
-        font.setPointSizeF(fontsize)
+        font.setPointSizeF(13)
         self.setFont(font)
         self.setText(text)
         self.setEditable(False)
@@ -284,7 +293,7 @@ class TreeModel(QStandardItemModel):
         if role == Qt.ItemDataRole.SizeHintRole:
             size = QSize()
             item = self.itemFromIndex(index)
-            size.setHeight(item.font().pointSize()+20)
+            size.setHeight(46 if item.parent() is None else 44)
             return size
         else:
             return super().data(index, role)
@@ -301,7 +310,10 @@ class ConfigTable(QTreeView):
         self.selected: TableItem = None
         self.last_selected: TableItem = None
         self.setHeaderHidden(True)
-        self.setMinimumWidth(260)
+        self.setFixedWidth(230)
+        self.setIndentation(16)
+        self.setIconSize(QSize(20, 20))
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def addHeader(self, header: str) -> TableItem:
         rootNode = self.model().invisibleRootItem()
@@ -325,22 +337,15 @@ class ConfigTable(QTreeView):
         if index.isValid():
             self.model().itemFromIndex(index).setBold(True)
         super().selectionChanged(selected, deselected)
-
-    def setCurrentItem(self, idx0, idx1):
-        index = self.tm.item(idx0, 0).child(idx1).index()
-        self.setCurrentIndex(index)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        super().mousePressEvent(event)
         if self.selected is not None:
             parent = self.selected.parent()
-            if parent is None:
-                idx1 = -1
-                idx0 = self.selected.row()
-            else:
-                idx1 = self.selected.row()
-                idx0 = parent.row()
-            self.tableitem_pressed.emit(idx0, idx1)
+            self.tableitem_pressed.emit(self.selected.row() if parent is None else parent.row(),
+                                        -1 if parent is None else self.selected.row())
+
+    def setCurrentItem(self, idx0, idx1):
+        item = self.tm.item(idx0, 0)
+        index = (item if idx1 < 0 else item.child(idx1)).index()
+        self.setCurrentIndex(index)
 
 
 class ConfigPanel(Widget):
@@ -354,10 +359,22 @@ class ConfigPanel(Widget):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        settings_title = '설정' if pcfg.display_lang == 'ko_KR' else self.tr('Settings')
+        self.setWindowTitle(settings_title)
+        self.resize(900, 700)
+        self.setMinimumSize(800, 500)
+        self._visibility_toggle = None
+        self._centered_once = False
         self.setObjectName("ConfigPanel")
         self.configTable = ConfigTable()
         self.configTable.tableitem_pressed.connect(self.onTableItemPressed)
         self.configContent = ConfigContent()
+        self.page_heading = QLabel()
+        self.page_heading.setObjectName('SettingsPageHeading')
+        self.page_heading.setContentsMargins(28, 24, 28, 0)
+        self.page_heading.setMinimumHeight(62)
         dlConfigPanel, dltableitem = self.addConfigBlock(self.tr('DL Module'))
         generalConfigPanel, generalTableItem = self.addConfigBlock(self.tr('General'))
         
@@ -396,32 +413,32 @@ class ConfigPanel(Widget):
         dlConfigPanel.vlayout.addWidget(msublock)
         self.empty_runcache_checker.stateChanged.connect(self.on_runcache_changed)
         self.prepare_modules_btn = QPushButton(parent=self)
-        self.prepare_modules_btn.setFixedWidth(500)
+        self.prepare_modules_btn.setMinimumHeight(34)
         self.prepare_modules_btn.setText(self.tr('Prepare Selected Modules'))
         self.prepare_modules_btn.clicked.connect(self.prepare_selected_modules)
-        msublock.layout().addWidget(self.prepare_modules_btn)
+        dlConfigPanel.vlayout.addWidget(self.prepare_modules_btn)
         self.unload_model_btn = QPushButton(parent=self)
-        self.unload_model_btn.setFixedWidth(500)
+        self.unload_model_btn.setMinimumHeight(34)
         self.unload_model_btn.setText(self.tr('Unload All Models'))
         self.unload_model_btn.clicked.connect(self.unload_models)
-        msublock.layout().addWidget(self.unload_model_btn)
+        dlConfigPanel.vlayout.addWidget(self.unload_model_btn)
 
         dlConfigPanel.addTextLabel(label_text_det)
-        self.detect_config_panel = TextDetectConfigPanel(self.tr('Detector'), scrollWidget=self)
+        self.detect_config_panel = TextDetectConfigPanel(self.tr('Detector'), scrollWidget=self, compact=True)
         self.detect_sub_block = dlConfigPanel.addBlockWidget(self.detect_config_panel)
         self.detect_config_panel.keep_existing_checker.clicked.connect(self.on_keepline_clicked)
 
         dlConfigPanel.addTextLabel(label_text_ocr)
-        self.ocr_config_panel = OCRConfigPanel(self.tr('OCR'), scrollWidget=self)
+        self.ocr_config_panel = OCRConfigPanel(self.tr('OCR'), scrollWidget=self, compact=True)
         self.ocr_sub_block = dlConfigPanel.addBlockWidget(self.ocr_config_panel)
 
         dlConfigPanel.addTextLabel(label_inpaint)
-        self.inpaint_config_panel = InpaintConfigPanel(self.tr('Inpainter'), scrollWidget=self)
+        self.inpaint_config_panel = InpaintConfigPanel(self.tr('Inpainter'), scrollWidget=self, compact=True)
         self.inpaint_sub_block = dlConfigPanel.addBlockWidget(self.inpaint_config_panel)
         self.inpaint_config_panel.filter_mask_by_bboxes_checker.clicked.connect(self.on_filter_mask_by_bboxes_clicked)
 
         dlConfigPanel.addTextLabel(label_translator)
-        self.trans_config_panel = TranslatorConfigPanel(label_translator, scrollWidget=self)
+        self.trans_config_panel = TranslatorConfigPanel(label_translator, scrollWidget=self, compact=True)
         self.trans_sub_block = dlConfigPanel.addBlockWidget(self.trans_config_panel)
 
         generalConfigPanel.addTextLabel(label_startup)
@@ -431,7 +448,7 @@ class ConfigPanel(Widget):
         self.check_update_on_startup_checker.stateChanged.connect(self.on_check_update_onstartup_changed)
 
         update_status_widget = QWidget()
-        update_status_layout = QHBoxLayout(update_status_widget)
+        update_status_layout = QVBoxLayout(update_status_widget)
         update_status_layout.setContentsMargins(0, 0, 0, 0)
         update_status_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.check_update_btn = QPushButton(parent=self)
@@ -449,9 +466,7 @@ class ConfigPanel(Widget):
             QFont.Weight.Normal,
         )
         update_status_layout.addWidget(self.check_update_btn)
-        update_status_layout.addSpacing(20)
         update_status_layout.addWidget(self.current_version_label)
-        update_status_layout.addSpacing(20)
         update_status_layout.addWidget(self.latest_version_label)
         generalConfigPanel.addBlockWidget(update_status_widget)
 
@@ -461,14 +476,14 @@ class ConfigPanel(Widget):
             self.tr('Huggingface Mirrors'),
             fix_size=False,
         )
-        self.huggingface_mirror_combobox.setFixedWidth(CONFIG_COMBOBOX_MIDEAN)
+        self.huggingface_mirror_combobox.setFixedWidth(200)
         self.huggingface_mirror_combobox.currentTextChanged.connect(self.on_huggingface_mirror_changed)
         self.pypi_mirror_combobox, _ = generalConfigPanel.addCombobox(
             display_options(PYPI_MIRROR_OPTIONS, none_label=none_label),
             self.tr('PyPI Mirrors'),
             fix_size=False,
         )
-        self.pypi_mirror_combobox.setFixedWidth(CONFIG_COMBOBOX_MIDEAN)
+        self.pypi_mirror_combobox.setFixedWidth(200)
         self.pypi_mirror_combobox.currentTextChanged.connect(self.on_pypi_mirror_changed)
 
         generalConfigPanel.addTextLabel(label_typesetting)
@@ -478,6 +493,7 @@ class ConfigPanel(Widget):
         global_fntfmt_widget = QWidget()
         global_fntfmt_layout = QGridLayout(global_fntfmt_widget)
         global_fntfmt_layout.setSpacing(0)
+        global_fntfmt_layout.setContentsMargins(0, 0, 0, 0)
         global_fntfmt_widget.setContentsMargins(0, 0, 0, 0)
 
         b = generalConfigPanel.addBlockWidget(global_fntfmt_widget)
@@ -489,30 +505,28 @@ class ConfigPanel(Widget):
         self.let_fntsize_combox.activated.connect(self.on_fntsize_flag_changed)
         self.let_fntstroke_combox, sublock = combobox_with_label([dec_program_str, use_global_str], self.tr('Stroke Size'), parent=self, insert_stretch=True)
         self.let_fntstroke_combox.activated.connect(self.on_fntstroke_flag_changed)
-        global_fntfmt_layout.addWidget(sublock, 0, 1)
+        global_fntfmt_layout.addWidget(sublock, 1, 0)
         
         self.let_fntcolor_combox, sublock = combobox_with_label([dec_program_str, use_global_str], self.tr('Font Color'), parent=self, insert_stretch=True)
         self.let_fntcolor_combox.activated.connect(self.on_fontcolor_flag_changed)
-        global_fntfmt_layout.addWidget(sublock, 1, 0)
+        global_fntfmt_layout.addWidget(sublock, 2, 0)
         self.let_fnt_scolor_combox, sublock = combobox_with_label([dec_program_str, use_global_str], self.tr('Stroke Color'), parent=self, insert_stretch=True)
         self.let_fnt_scolor_combox.activated.connect(self.on_font_scolor_flag_changed)
-        global_fntfmt_layout.addWidget(sublock, 1, 1)
+        global_fntfmt_layout.addWidget(sublock, 3, 0)
 
         self.let_effect_combox, sublock = combobox_with_label([dec_program_str, use_global_str], self.tr('Effect'), parent=self, insert_stretch=True)
         self.let_effect_combox.activated.connect(self.on_effect_flag_changed)
-        global_fntfmt_layout.addWidget(sublock, 2, 0)
+        global_fntfmt_layout.addWidget(sublock, 4, 0)
         self.let_alignment_combox, sublock = combobox_with_label([dec_program_str, use_global_str], self.tr('Alignment'), parent=self, insert_stretch=True)
         self.let_alignment_combox.activated.connect(self.on_alignment_flag_changed)
-        global_fntfmt_layout.addWidget(sublock, 2, 1)
+        global_fntfmt_layout.addWidget(sublock, 5, 0)
 
         self.let_writing_mode_combox, sublock = combobox_with_label([dec_program_str, use_global_str], self.tr('Writing-mode'), parent=self, insert_stretch=True)
         self.let_writing_mode_combox.activated.connect(self.on_writing_mode_flag_changed)
-        global_fntfmt_layout.addWidget(sublock, 3, 0)
+        global_fntfmt_layout.addWidget(sublock, 6, 0)
         self.let_family_combox, sublock = combobox_with_label([self.tr('Keep existing'), self.tr('Always use global setting')], self.tr('Font Family'), parent=self, insert_stretch=True)
         self.let_family_combox.activated.connect(self.on_family_flag_changed)
-        global_fntfmt_layout.addWidget(sublock, 3, 1)
-
-        global_fntfmt_layout.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding), 0, 2)
+        global_fntfmt_layout.addWidget(sublock, 7, 0)
 
         self.let_autolayout_checker, sublock = generalConfigPanel.addCheckBox(self.tr('Auto layout'), 
                 discription=self.tr('Split translation into multi-lines according to the extracted balloon region.'))
@@ -537,9 +551,8 @@ class ConfigPanel(Widget):
         self.rst_imgquality_edit.finish_edited.connect(self.on_edit_quality_changed)
 
         sublock = ConfigSubBlock(self.rst_imgquality_edit, self.tr('Quality'), vertical_layout=False)
-        sublock.layout().setAlignment(Qt.AlignmentFlag.AlignLeft)
-        sublock.layout().insertStretch(-1)
-        imsave_sublock.layout().addWidget(sublock)
+        self.rst_imgquality_edit.setFixedHeight(34)
+        generalConfigPanel.addSublock(sublock)
 
         self.intermediate_imgformat_combobox, intermediate_imsave_sublock = generalConfigPanel.addCombobox(['PNG', 'JXL'], self.tr('Intermediate image format'))
         self.intermediate_imgformat_combobox.activated.connect(self.on_intermediate_imgformat_changed)
@@ -554,28 +567,41 @@ class ConfigPanel(Widget):
         self.selectext_minimenu_checker.stateChanged.connect(self.on_selectext_minimenu_changed)
         self.saladict_shortcut = QKeySequenceEdit("ALT+W", self)
         self.saladict_shortcut.keySequenceChanged.connect(self.on_saladict_shortcut_changed)
-        self.saladict_shortcut.setFixedWidth(CONFIG_COMBOBOX_MIDEAN)
+        self.saladict_shortcut.setFixedWidth(200)
 
         sublock = ConfigSubBlock(self.saladict_shortcut, self.tr("Shortcut"), vertical_layout=False)
         sublock.layout().insertStretch(-1)
         generalConfigPanel.addSublock(sublock)
         self.searchurl_combobox, _ = generalConfigPanel.addCombobox(["https://www.google.com/search?q=", "https://www.bing.com/search?q=", "https://duckduckgo.com/?q=", "https://yandex.com/search/?text=", "http://www.baidu.com/s?wd=", "https://search.yahoo.com/search;?p=", "https://www.urbandictionary.com/define.php?term="], self.tr("Search Engines"), fix_size=False)
         self.searchurl_combobox.setEditable(True)
-        self.searchurl_combobox.setFixedWidth(CONFIG_COMBOBOX_LONG)
+        self.searchurl_combobox.setFixedWidth(200)
         self.searchurl_combobox.currentTextChanged.connect(self.on_searchurl_changed)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.configTable)
-        splitter.addWidget(self.configContent)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
         hlayout = QHBoxLayout(self)
-
-        hlayout.addWidget(splitter)
+        hlayout.addWidget(self.configTable)
+        page_layout = QVBoxLayout()
+        page_layout.setSpacing(0)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(self.page_heading)
+        page_layout.addWidget(self.configContent, 1)
+        hlayout.addLayout(page_layout, 1)
         hlayout.setSpacing(0)
         hlayout.setContentsMargins(0, 0, 0, 0)
 
         self.configTable.expandAll()
+        self.refreshSettingsStyle()
+        self.configTable.setCurrentItem(0, 0)
+
+    def refreshSettingsStyle(self):
+        self.setStyleSheet(settings_stylesheet(pcfg.darkmode))
+        for group, root_icon, children in (
+            (0, 'settings/cube.svg', ['settings/text-recognition.svg', 'settings/scan.svg', 'settings/brush.svg', 'settings/language.svg']),
+            (1, 'settings/settings.svg', ['settings/player-play.svg', 'settings/letter-t.svg', 'settings/device-floppy.svg', 'settings/puzzle.svg']),
+        ):
+            root = self.configTable.tm.item(group, 0)
+            root.setIcon(settings_icon(root_icon, pcfg.darkmode))
+            for row, icon in enumerate(children):
+                root.child(row).setIcon(settings_icon(icon, pcfg.darkmode))
 
     def on_load_model_changed(self):
         pcfg.module.load_model_on_demand = self.load_model_checker.isChecked()
@@ -594,7 +620,6 @@ class ConfigPanel(Widget):
 
     def addConfigBlock(self, header: str) -> Tuple[ConfigBlock, TableItem]:
         cb = ConfigBlock(header, parent=self)
-        cb.sublock_pressed.connect(self.onSublockPressed)
         self.configContent.addConfigBlock(cb)
         cb.setIndex(len(self.configContent.config_block_list)-1)
         ti = self.configTable.addHeader(header)
@@ -605,6 +630,8 @@ class ConfigPanel(Widget):
         self.configContent.deactiveLabel()
 
     def onTableItemPressed(self, idx0, idx1):
+        item = self.configTable.tm.item(idx0, 0)
+        self.page_heading.setText((item if idx1 < 0 else item.child(idx1)).text())
         self.configContent.setActiveLabel(idx0, idx1)
 
     def on_open_onstartup_changed(self):
@@ -704,7 +731,25 @@ class ConfigPanel(Widget):
         self.configTable.setCurrentItem(idx0, idx1)
         self.configTable.tableitem_pressed.emit(idx0, idx1)
 
+    def bindVisibilityToggle(self, toggle) -> None:
+        self._visibility_toggle = toggle
+        toggle.toggled.connect(self.setVisible)
+
+    def showEvent(self, e) -> None:
+        self.refreshSettingsStyle()
+        result = super().showEvent(e)
+        if not self._centered_once and self.parentWidget() is not None:
+            frame = self.frameGeometry()
+            frame.moveCenter(self.parentWidget().window().frameGeometry().center())
+            self.move(frame.topLeft())
+            self._centered_once = True
+        if self._visibility_toggle is not None:
+            self._visibility_toggle.setChecked(True)
+        return result
+
     def hideEvent(self, e) -> None:
+        if self._visibility_toggle is not None:
+            self._visibility_toggle.setChecked(False)
         self.save_config.emit()
         return super().hideEvent(e)
         

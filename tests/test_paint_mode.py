@@ -15,10 +15,10 @@ if APP_ROOT not in sys.path:
 from qtpy.QtCore import QPointF, QRectF, QSize, Qt
 from qtpy.QtGui import QColor, QImage, QPainter, QPen
 try:
-    from qtpy.QtWidgets import QApplication, QUndoCommand, QWidget
+    from qtpy.QtWidgets import QApplication, QComboBox, QUndoCommand, QWidget
 except ImportError:
     from qtpy.QtGui import QUndoCommand
-    from qtpy.QtWidgets import QApplication, QWidget
+    from qtpy.QtWidgets import QApplication, QComboBox, QWidget
 
 from ui.canvas import Canvas
 from ui.drawing_commands import InpaintHardResetCommand, InpaintUndoCommand, StrokeItemUndoCommand
@@ -91,7 +91,7 @@ class CounterCommand(QUndoCommand):
 
 class FakeInpainterPanel:
     def __init__(self):
-        self.module_combobox = QWidget()
+        self.module_combobox = QComboBox()
 
 
 class PaintModeTest(unittest.TestCase):

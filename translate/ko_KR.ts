@@ -125,6 +125,11 @@
 <context>
     <name>ConfigPanel</name>
     <message>
+        <location filename="../ui/configpanel.py" line="360"/>
+        <source>Settings</source>
+        <translation>설정</translation>
+    </message>
+    <message>
         <location filename="../ui/configpanel.py" line="351"/>
         <source>DL Module</source>
         <translation>DL 모듈</translation>

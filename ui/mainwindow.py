@@ -137,6 +137,8 @@ class MainWindow(mainwindow_cls):
     def resetStyleSheet(self, reverse_icon: bool = False):
         theme = 'eva-dark' if pcfg.darkmode else 'eva-light'
         self.setStyleSheet(parse_stylesheet(theme, reverse_icon))
+        if hasattr(self, 'configPanel'):
+            self.configPanel.refreshSettingsStyle()
 
     def setupUi(self):
         screen_size = QGuiApplication.primaryScreen().geometry().size()
@@ -150,6 +152,7 @@ class MainWindow(mainwindow_cls):
         self.leftBar.showPageListLabel.clicked.connect(self.pageLabelStateChanged)
         self.leftBar.imgTransChecked.connect(self.setupImgTransUI)
         self.leftBar.configChecked.connect(self.setupConfigUI)
+        self.configPanel.bindVisibilityToggle(self.leftBar.configChecker)
         self.leftBar.globalSearchChecker.clicked.connect(self.on_set_gsearch_widget)
         self.leftBar.open_dir.connect(self.OpenProj)
         self.leftBar.open_json_proj.connect(self.openJsonProj)
@@ -255,7 +258,6 @@ class MainWindow(mainwindow_cls):
         self.comicTransSplitter.addWidget(self.rightComicTransStackPanel)
 
         self.centralStackWidget.addWidget(self.comicTransSplitter)
-        self.centralStackWidget.addWidget(self.configPanel)
 
         self.selectext_minimenu = self.st_manager.selectext_minimenu = SelectTextMiniMenu(self.app, self)
         self.selectext_minimenu.block_current_editor.connect(self.st_manager.on_block_current_editor)
@@ -581,7 +583,10 @@ class MainWindow(mainwindow_cls):
             self.leftStackWidget.hide()
 
     def setupConfigUI(self):
-        self.centralStackWidget.setCurrentIndex(1)
+        self.centralStackWidget.setCurrentIndex(0)
+        self.configPanel.show()
+        self.configPanel.raise_()
+        self.configPanel.activateWindow()
 
     def showWorkflowSettingsPanel(self):
         self.leftBar.imgTransChecker.setChecked(True)

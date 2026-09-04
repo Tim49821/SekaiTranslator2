@@ -21,7 +21,7 @@ from .funcmaps import (
 from .module_manager import ModuleManager
 from .image_edit import ImageEditMode, PenShape, PixmapItem, StrokeImgItem
 from .configpanel import InpaintConfigPanel
-from .custom_widget import Widget, SeparatorWidget, PaintQSlider, ColorPickerLabel
+from .custom_widget import Widget, SeparatorWidget, PaintQSlider, ColorPickerLabel, ConfigComboBox
 from .canvas import Canvas
 from .misc import ndarray2pixmap
 from utils.config import DrawPanelConfig, pcfg
@@ -81,6 +81,17 @@ class ToolNameLabel(QLabel):
                 font_size = TOOLNAME_POINT_SIZE * fix_width * 0.95 / text_width
                 font.setPointSizeF(font_size)
         self.setFont(font)
+
+
+def _inpaint_selector_view(source, parent):
+    """Keep canvas controls in place while modeless settings are also visible."""
+    selector = ConfigComboBox(scrollWidget=parent)
+    selector.setModel(source.model())
+    selector.setCurrentIndex(source.currentIndex())
+    selector.setFixedSize(CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_HEIGHT)
+    source.currentIndexChanged.connect(selector.setCurrentIndex)
+    selector.activated.connect(source.setCurrentIndex)
+    return selector
             
 
 class InpaintPanel(Widget):
@@ -116,6 +127,8 @@ class InpaintPanel(Widget):
         self.inpaint_layout = inpaint_layout = QHBoxLayout()
         inpaint_layout.addWidget(ToolNameLabel(100, self.tr('Inpainter')))
         self.inpainter_panel = inpainter_panel
+        self.module_combobox = _inpaint_selector_view(inpainter_panel.module_combobox, self)
+        inpaint_layout.addWidget(self.module_combobox)
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -127,14 +140,6 @@ class InpaintPanel(Widget):
     def on_thickness_changed(self):
         if self.thicknessSlider.hasFocus():
             self.thicknessChanged.emit(self.thicknessSlider.value())
-
-    def showEvent(self, e) -> None:
-        self.inpaint_layout.addWidget(self.inpainter_panel.module_combobox)
-        super().showEvent(e)
-
-    def hideEvent(self, e) -> None:
-        self.inpaint_layout.removeWidget(self.inpainter_panel.module_combobox)
-        return super().hideEvent(e)
 
     @property
     def shape(self):
@@ -294,6 +299,8 @@ class RectPanel(Widget):
         self.inpaint_layout = inpaint_layout = QHBoxLayout()
         inpaint_layout.addWidget(ToolNameLabel(100, self.tr('Inpainter')))
         self.inpainter_panel = inpainter_panel
+        self.module_combobox = _inpaint_selector_view(inpainter_panel.module_combobox, self)
+        inpaint_layout.addWidget(self.module_combobox)
 
         glayout = QGridLayout()
         glayout.addWidget(self.dilate_label, 0, 0)
@@ -308,14 +315,6 @@ class RectPanel(Widget):
         layout.addLayout(self.btnlayout)
         layout.setSpacing(14)
 
-    def showEvent(self, e) -> None:
-        self.inpaint_layout.addWidget(self.inpainter_panel.module_combobox)
-        super().showEvent(e)
-
-    def hideEvent(self, e) -> None:
-        self.inpaint_layout.removeWidget(self.inpainter_panel.module_combobox)
-        return super().hideEvent(e)
-        
     def on_inpaint_seg_method_changed(self):
         method_id = self.methodComboBox.currentData()
         if method_id is None:

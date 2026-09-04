@@ -7,19 +7,20 @@ from .custom_widget import ConfigComboBox, ParamComboBox, NoBorderPushBtn, Param
 from utils.shared import CONFIG_COMBOBOX_LONG, size2width, CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_HEIGHT
 from utils.config import pcfg
 
-from qtpy.QtWidgets import QPlainTextEdit, QHBoxLayout, QVBoxLayout, QWidget, QLabel, QCheckBox, QLineEdit, QGridLayout, QPushButton, QInputDialog
+from qtpy.QtWidgets import QPlainTextEdit, QHBoxLayout, QVBoxLayout, QWidget, QLabel, QCheckBox, QLineEdit, QGridLayout, QPushButton, QInputDialog, QSizePolicy
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QDoubleValidator
+from .settings_widgets import SettingsToggle, settings_row, settings_heading, settings_text
 
 
 class ParamCheckGroup(QWidget):
 
     paramwidget_edited = Signal(str, dict)
 
-    def __init__(self, param_key, check_group: dict, parent=None) -> None:
+    def __init__(self, param_key, check_group: dict, parent=None, compact=False) -> None:
         super().__init__(parent=parent)
         self.param_key = param_key
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self) if compact else QHBoxLayout(self)
         self.label2widget = {}
         for k, v in check_group.items():
             checker = QCheckBox(text=k, parent=self)
@@ -315,15 +316,20 @@ class ParamStyleGuideManager(ParamPresetManager):
 class ParamWidget(QWidget):
 
     paramwidget_edited = Signal(str, dict)
-    def __init__(self, params, scrollWidget: QWidget = None, *args, **kwargs) -> None:
+    def __init__(self, params, scrollWidget: QWidget = None, *args, compact=False, detector_settings=False, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self) if compact else QHBoxLayout(self)
+        if compact:
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
         self.param_layout = param_layout = QGridLayout()
         param_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         param_layout.setContentsMargins(0, 0, 0, 0)
         param_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        layout.addLayout(param_layout)
-        layout.addStretch(-1)
+        if not compact:
+            layout.addLayout(param_layout)
+            layout.addStretch(-1)
+        text_section_added = False
 
         if 'description' in params:
             self.setToolTip(params['description'])
@@ -374,10 +380,10 @@ class ParamWidget(QWidget):
 
                     if param_key == 'device' and DEFAULT_DEVICE == 'cpu':
                         param_dict['value'] = 'cpu'
-                        for ii, device in enumerate(param_dict['options']):
+                        for device_index, device in enumerate(param_dict['options']):
                             if device in GPUINTENSIVE_SET:
                                 model = param_widget.model()
-                                item = model.item(ii, 0)
+                                item = model.item(device_index, 0)
                                 item.setEnabled(False)
                     param_widget.setCurrentText(str(value))
                     param_widget.setEditable(param_dict.get('editable', False))
@@ -408,7 +414,7 @@ class ParamWidget(QWidget):
                     param_widget.setText(str(value))
 
                 elif param_type == 'check_group':
-                    param_widget = ParamCheckGroup(param_key, check_group=value)
+                    param_widget = ParamCheckGroup(param_key, check_group=value, compact=compact)
 
                 if param_widget is not None:
                     param_widget.paramwidget_edited.connect(self.on_paramwidget_edited)
@@ -416,6 +422,49 @@ class ParamWidget(QWidget):
                         param_widget.setToolTip(param_dict['description'])
 
             widget_idx = 0
+            if compact and param_widget is not None:
+                if detector_settings and not text_section_added and param_key in ('font size multiplier', 'font size max', 'font size min', 'mask dilate size'):
+                    layout.addWidget(settings_heading('Text and mask', '텍스트와 마스크'))
+                    text_section_added = True
+                aliases = {
+                    'detect_size': '검출 크기', 'det_rearrange_max_batches': '최대 배치 수',
+                    'device': '실행 장치', 'font size multiplier': '글꼴 크기 배율',
+                    'font size max': '최대 글꼴 크기', 'font size min': '최소 글꼴 크기',
+                    'mask dilate size': '마스크 확장',
+                }
+                if param_key in aliases and display_param_name == param_key:
+                    display_param_name = settings_text(param_key, aliases[param_key])
+                stacked = isinstance(param_widget, (ParamEditor, ParamPresetManager, ParamCheckGroup, ParamPushButton))
+                if isinstance(param_widget, (ParamComboBox, ParamLineEditor)):
+                    stacked = stacked or param_widget.width() > 332
+                    param_widget.setFixedHeight(34)
+                if stacked:
+                    param_widget.setMinimumWidth(0)
+                    param_widget.setMaximumWidth(16777215)
+                    param_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                    if isinstance(param_widget, ParamPresetManager):
+                        for child in (param_widget.selector, param_widget.editor):
+                            child.setMinimumWidth(0)
+                            child.setMaximumWidth(16777215)
+                            child.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                else:
+                    param_widget.setFixedWidth(200)
+                control = param_widget
+                if hasattr(param_widget, 'flush_btn') or hasattr(param_widget, 'path_select_btn'):
+                    control = QWidget()
+                    buttons = QHBoxLayout(control)
+                    buttons.setContentsMargins(0, 0, 0, 0)
+                    buttons.addWidget(param_widget, 1)
+                    if hasattr(param_widget, 'flush_btn'):
+                        buttons.addWidget(param_widget.flush_btn)
+                        param_widget.flushbtn_clicked.connect(self.on_flushbtn_clicked)
+                    if hasattr(param_widget, 'path_select_btn'):
+                        buttons.addWidget(param_widget.path_select_btn)
+                        param_widget.pathbtn_clicked.connect(self.on_pathbtn_clicked)
+                    stacked = True
+                row = settings_row(display_param_name, control, stacked=stacked) if require_label else control
+                layout.addWidget(row)
+                continue
             if require_label:
                 param_label = ParamNameLabel(display_param_name)
                 param_layout.addWidget(param_label, ii, 0)
@@ -470,26 +519,37 @@ class ModuleParseWidgets(QWidget):
 class ModuleConfigParseWidget(QWidget):
     module_changed = Signal(str)
     paramwidget_edited = Signal(str, dict)
-    def __init__(self, module_name: str, get_valid_module_keys: Callable, scrollWidget: QWidget, add_from: int = 1, *args, **kwargs) -> None:
+    def __init__(self, module_name: str, get_valid_module_keys: Callable, scrollWidget: QWidget, add_from: int = 1, *args, compact=False, **kwargs) -> None:
         super().__init__( *args, **kwargs)
+        self.compact = compact
+        self.detector_settings = False
         self.get_valid_module_keys = get_valid_module_keys
-        self.module_combobox = ConfigComboBox(scrollWidget=scrollWidget)
+        self.module_combobox = ConfigComboBox(scrollWidget=scrollWidget, fix_size=not compact)
+        if compact:
+            self.module_combobox.setFixedWidth(200)
+            self.module_combobox.setFixedHeight(34)
         self.params_layout = QHBoxLayout()
         self.params_layout.setContentsMargins(0, 0, 0, 0)
 
         p_layout = QHBoxLayout()
-        p_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        if not compact:
+            p_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.module_label = ParamNameLabel(module_name)
-        p_layout.addWidget(self.module_label)
+        self.module_label.setWordWrap(True)
+        p_layout.addWidget(self.module_label, 1 if compact else 0)
         p_layout.addWidget(self.module_combobox)
-        p_layout.addStretch(-1)
+        if not compact:
+            p_layout.addStretch(-1)
         self.p_layout = p_layout
 
         layout = QVBoxLayout(self)
         self.param_widget_map = {}
         layout.addLayout(p_layout) 
         layout.addLayout(self.params_layout)
-        layout.setSpacing(30)
+        layout.setSpacing(12 if compact else 30)
+        if compact:
+            layout.setContentsMargins(0, 0, 0, 0)
+            p_layout.setContentsMargins(0, 12, 0, 12)
         self.vlayout = layout
 
         self.visibleWidget: QWidget = None
@@ -542,7 +602,7 @@ class ModuleConfigParseWidget(QWidget):
             if widget is None:
                 # lazy load widgets
                 params = self.module_dict[module]
-                widget = ParamWidget(params, scrollWidget=self)
+                widget = ParamWidget(params, scrollWidget=self, compact=self.compact, detector_settings=self.detector_settings)
                 widget.paramwidget_edited.connect(self.paramwidget_edited)
                 self.param_widget_map[module] = widget
                 self.params_layout.addWidget(widget)
@@ -565,8 +625,8 @@ class TranslatorConfigPanel(ModuleConfigParseWidget):
         super().__init__(module_name, GET_VALID_TRANSLATORS, scrollWidget=scrollWidget, *args, **kwargs)
         self.translator_changed = self.module_changed
     
-        self.source_combobox = ConfigComboBox(scrollWidget=scrollWidget)
-        self.target_combobox = ConfigComboBox(scrollWidget=scrollWidget)
+        self.source_combobox = ConfigComboBox(scrollWidget=scrollWidget, fix_size=not self.compact)
+        self.target_combobox = ConfigComboBox(scrollWidget=scrollWidget, fix_size=not self.compact)
         self.replacePreMTkeywordBtn = NoBorderPushBtn(self.tr("Keyword substitution for machine translation source text"), self)
         self.replacePreMTkeywordBtn.clicked.connect(self.show_pre_MT_keyword_window)
         self.replacePreMTkeywordBtn.setFixedWidth(500)
@@ -591,6 +651,32 @@ class TranslatorConfigPanel(ModuleConfigParseWidget):
         self.vlayout.addWidget(self.replaceOCRkeywordBtn)
         self.vlayout.addWidget(self.replacePreMTkeywordBtn)
         self.vlayout.addWidget(self.replaceMTkeywordBtn)
+        if self.compact:
+            # Language controls and long actions must not form a wide toolbar.
+            while st_layout.count():
+                item = st_layout.takeAt(0)
+                if item.widget() not in (self.source_combobox, self.target_combobox):
+                    item.widget().deleteLater()
+            self.vlayout.removeItem(st_layout)
+            for index, label, control in (
+                (1, self.tr('Source'), self.source_combobox),
+                (2, self.tr('Target'), self.target_combobox),
+            ):
+                control.setFixedSize(200, 34)
+                self.vlayout.insertWidget(index, settings_row(label, control))
+            for button in (self.replaceOCRkeywordBtn, self.replacePreMTkeywordBtn, self.replaceMTkeywordBtn):
+                button.setMinimumWidth(0)
+                button.setMaximumWidth(16777215)
+                button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                button.setToolTip(button.text())
+            self._compact_checker_box(self.translateByTextblockBox)
+
+    def _compact_checker_box(self, box):
+        label = box.findChild(ParamNameLabel)
+        label.setWordWrap(True)
+        box.layout().setContentsMargins(0, 0, 0, 0)
+        box.layout().setAlignment(Qt.AlignmentFlag(0))
+        box.layout().setStretch(0, 1)
 
     def finishSetTranslator(self, translator: BaseTranslator):
         self.source_combobox.blockSignals(True)
@@ -620,22 +706,35 @@ class InpaintConfigPanel(ModuleConfigParseWidget):
         self.filter_mask_by_bboxes_checker = QCheckBox(text=self.tr('Filter mask by text boxes'))
         self.vlayout.addWidget(self.needInpaintChecker)
         self.vlayout.addWidget(self.filter_mask_by_bboxes_checker)
-
-    def showEvent(self, e) -> None:
-        self.p_layout.insertWidget(1, self.module_combobox)
-        super().showEvent(e)
-
-    def hideEvent(self, e) -> None:
-        self.p_layout.removeWidget(self.module_combobox)
-        return super().hideEvent(e)
+        if self.compact:
+            label = self.needInpaintChecker.findChild(ParamNameLabel)
+            label.setWordWrap(True)
+            self.needInpaintChecker.layout().setContentsMargins(0, 0, 0, 0)
+            self.needInpaintChecker.layout().setAlignment(Qt.AlignmentFlag(0))
+            self.needInpaintChecker.layout().setStretch(0, 1)
+            self.vlayout.removeWidget(self.filter_mask_by_bboxes_checker)
+            text = self.filter_mask_by_bboxes_checker.text()
+            self.filter_mask_by_bboxes_checker.setText('')
+            self.vlayout.addWidget(settings_row(text, self.filter_mask_by_bboxes_checker))
 
 class TextDetectConfigPanel(ModuleConfigParseWidget):
     def __init__(self, module_name: str, scrollWidget: QWidget = None, *args, **kwargs) -> None:
         super().__init__(module_name, GET_VALID_TEXTDETECTORS, scrollWidget = scrollWidget, *args, **kwargs)
         self.detector_changed = self.module_changed
         self.setDetector = self.setModule
-        self.keep_existing_checker = QCheckBox(text=self.tr('Keep Existing Lines'))
-        self.p_layout.insertWidget(2, self.keep_existing_checker)
+        if self.compact:
+            self.detector_settings = True
+            self.module_label.setText(settings_text('Detection model', '검출 모델'))
+            self.keep_existing_checker = SettingsToggle()
+            self.keep_existing_checker.setFixedSize(42, 26)
+            heading = settings_heading('Detection', '검출')
+            heading.setProperty('firstSection', True)
+            self.vlayout.insertWidget(1, heading)
+            self.vlayout.insertWidget(2, settings_row(settings_text('Keep Existing Lines', '기존 텍스트 줄 유지'), self.keep_existing_checker))
+            self.vlayout.setSpacing(4)
+        else:
+            self.keep_existing_checker = QCheckBox(text=self.tr('Keep Existing Lines'))
+            self.p_layout.insertWidget(2, self.keep_existing_checker)
         
 
 class OCRConfigPanel(ModuleConfigParseWidget):
@@ -651,6 +750,12 @@ class OCRConfigPanel(ModuleConfigParseWidget):
         self.fontDetectChecker.setChecked(pcfg.module.ocr_font_detect)
         self.fontDetectChecker.clicked.connect(self.on_fontdetect_changed)
         self.vlayout.addWidget(self.fontDetectChecker)
+        if self.compact:
+            for checkbox in (self.restoreEmptyOCRChecker, self.fontDetectChecker):
+                self.vlayout.removeWidget(checkbox)
+                label = checkbox.text()
+                checkbox.setText('')
+                self.vlayout.addWidget(settings_row(label, checkbox))
 
     def on_restore_empty_ocr(self):
         pcfg.restore_ocr_empty = self.restoreEmptyOCRChecker.isChecked()
